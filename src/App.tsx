@@ -1,6 +1,22 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 
-// ── PERIODS & DAYS ────────────────────────────────────────────────────────────
+// ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const AUTO_SAVE_DELAY = 2000;
+const BREAK_AFTER_IDX = 4;
+const DAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
 const PERIODS = [
   { label: "1st", time: "8:40-9:20" },
   { label: "2nd", time: "9:20-10:00" },
@@ -13,23 +29,19 @@ const PERIODS = [
   { label: "Diary", time: "Diary" },
 ];
 
-const BREAK_AFTER_IDX = 4;
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-// ── LocalStorage helpers ──────────────────────────────────────────────────────
+// ── localStorage KEYS ─────────────────────────────────────────────────────────
 const LS_SCHOOL_KEY = "tas_school_info";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
+const LS_COLUMNS_KEY = "tas_columns_data";
+const LS_DATE_KEY = "tas_selected_date";
+const LS_DAY_KEY = "tas_selected_day";
+const LS_RECORDS_KEY = "tas_adjustment_records";
 
 const DEFAULT_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1jsvywGYMQ_dYZb1cpFGsREMA575hbzkDoa2F0R9VkFw/edit?usp=sharing";
 
-function saveSchoolInfo(info: SchoolInfo) {
-  const { logoUrl, ...rest } = info;
-  localStorage.setItem(LS_SCHOOL_KEY, JSON.stringify(rest));
-  if (logoUrl) localStorage.setItem(LS_LOGO_KEY, logoUrl);
-}
-
+// ── INTERFACES ────────────────────────────────────────────────────────────────
 interface SchoolInfo {
   name1: string;
   name2: string;
@@ -37,6 +49,35 @@ interface SchoolInfo {
   address: string;
   phone: string;
   logoUrl: string;
+}
+
+interface Column {
+  id: number;
+  selectedTeacher: string;
+  substituteTeacher: string[];
+  classValues: string[];
+}
+
+interface Teacher {
+  name: string;
+  schedule: Record<string, string[]>;
+}
+
+interface AdjustmentRecord {
+  id: string;
+  date: string;
+  day: string;
+  timestamp: number;
+  columns: Column[];
+  totalTeachers: number;
+  totalSubstitutes: number;
+}
+
+// ── localStorage HELPERS ──────────────────────────────────────────────────────
+function saveSchoolInfo(info: SchoolInfo) {
+  const { logoUrl, ...rest } = info;
+  localStorage.setItem(LS_SCHOOL_KEY, JSON.stringify(rest));
+  if (logoUrl) localStorage.setItem(LS_LOGO_KEY, logoUrl);
 }
 
 function loadSchoolInfo(): SchoolInfo {
@@ -60,17 +101,84 @@ function loadSheetUrl(): string {
   return localStorage.getItem(LS_SHEET_URL_KEY) || DEFAULT_SHEET_URL;
 }
 
-// ── CSV Parser ────────────────────────────────────────────────────────────────
+function loadColumns(): Column[] {
+  try {
+    const saved = localStorage.getItem(LS_COLUMNS_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return [
+    {
+      id: 1,
+      selectedTeacher: "",
+      substituteTeacher: Array(9).fill(""),
+      classValues: Array(9).fill(""),
+    },
+  ];
+}
+
+function loadDate(): string {
+  return (
+    localStorage.getItem(LS_DATE_KEY) ||
+    new Date().toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    })
+  );
+}
+
+function loadDay(): string {
+  const saved = localStorage.getItem(LS_DAY_KEY);
+  if (saved && DAYS.includes(saved)) return saved;
+  return getTodayDay();
+}
+
+function loadRecords(): AdjustmentRecord[] {
+  try {
+    const saved = localStorage.getItem(LS_RECORDS_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+function saveRecords(records: AdjustmentRecord[]) {
+  localStorage.setItem(LS_RECORDS_KEY, JSON.stringify(records));
+}
+
+// ── UTILITY FUNCTIONS ─────────────────────────────────────────────────────────
+function getTodayDay(): string {
+  const days = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+  return days[new Date().getDay()] ?? "Monday";
+}
+
 function parseCSV(csvText: string): string[][] {
   const rows: string[][] = [];
   for (const line of csvText.split("\n")) {
     if (!line.trim()) continue;
     const cols: string[] = [];
-    let cur = "", inQ = false;
+    let cur = "",
+      inQ = false;
     for (const ch of line) {
-      if (ch === '"') { inQ = !inQ; }
-      else if (ch === "," && !inQ) { cols.push(cur.trim()); cur = ""; }
-      else cur += ch;
+      if (ch === '"') {
+        inQ = !inQ;
+      } else if (ch === "," && !inQ) {
+        cols.push(cur.trim());
+        cur = "";
+      } else cur += ch;
     }
     cols.push(cur.trim());
     rows.push(cols);
@@ -79,25 +187,31 @@ function parseCSV(csvText: string): string[][] {
 }
 
 function isDay(val: string) {
-  return /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(val.trim());
+  return /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i.test(
+    val.trim(),
+  );
 }
+
 function isClass(val: string) {
-  return /^(I{1,3}|IV|V|VI{0,3}|VIII|IX|X{1,2}|XI{0,2}|XII|\d{1,2})[\s\-]?[A-Z]\d?$/i.test(val.trim());
+  return /^(I{1,3}|IV|V|VI{0,3}|VIII|IX|X{1,2}|XI{0,2}|XII|\d{1,2})[\s\-]?[A-Z]\d?$/i.test(
+    val.trim(),
+  );
 }
+
 function isTeacherName(val: string) {
   const v = val.trim();
   if (v.length < 4) return false;
   if (/^\d+$/.test(v)) return false;
   if (isClass(v) || isDay(v)) return false;
-  if (/^(days|periods?|load|sr\.?no?|s\.no|name|teacher|subject|class|time|date|schedule|free|off|break|recess|lunch|assembly|diary)$/i.test(v)) return false;
+  if (
+    /^(days|periods?|load|sr\.?no?|s\.no|name|teacher|subject|class|time|date|schedule|free|off|break|recess|lunch|assembly|diary)$/i.test(
+      v,
+    )
+  )
+    return false;
   if (/^\d+[\.\)]\s*/.test(v)) return false;
   const letters = (v.match(/[a-zA-Z]/g) || []).length;
   return letters / v.length >= 0.65;
-}
-
-interface Teacher {
-  name: string;
-  schedule: Record<string, string[]>;
 }
 
 function extractTeachers(rows: string[][]): Teacher[] {
@@ -106,7 +220,8 @@ function extractTeachers(rows: string[][]): Teacher[] {
   let i = 0;
   while (i < rows.length) {
     const row = rows[i];
-    const fc = (row[0] ?? "").trim(), sc = (row[1] ?? "").trim();
+    const fc = (row[0] ?? "").trim(),
+      sc = (row[1] ?? "").trim();
     let name = "";
     if (isTeacherName(fc)) name = fc;
     else if (isTeacherName(sc) && !isTeacherName(fc)) name = sc;
@@ -116,7 +231,8 @@ function extractTeachers(rows: string[][]): Teacher[] {
     }
     if (name && !seen.has(name.toLowerCase())) {
       const schedule: Record<string, string[]> = {};
-      let j = i + 1, daysFound = 0;
+      let j = i + 1,
+        daysFound = 0;
       while (j < rows.length && daysFound < 8) {
         const r = rows[j];
         const dc = (r[0] ?? "").trim();
@@ -126,7 +242,8 @@ function extractTeachers(rows: string[][]): Teacher[] {
           for (let p = 1; p <= 9; p++) periods.push((r[p] ?? "").trim());
           schedule[dk] = periods;
           daysFound++;
-        } else if (isTeacherName(dc) || isTeacherName((r[1] ?? "").trim())) break;
+        } else if (isTeacherName(dc) || isTeacherName((r[1] ?? "").trim()))
+          break;
         j++;
       }
       if (daysFound > 0) {
@@ -141,28 +258,19 @@ function extractTeachers(rows: string[][]): Teacher[] {
   return teachers;
 }
 
-function getTodayDay(): string {
-  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  return days[new Date().getDay()] ?? "Monday";
-}
-
 function isPeriodFree(teacher: Teacher, day: string, idx: number) {
   const v = (teacher.schedule[day]?.[idx] ?? "").trim();
   return v === "" || v.toLowerCase() === "free" || v === "—" || v === "-";
 }
 
 function getFreePeriodCounts(teacher: Teacher, day: string) {
-  let before = 0, after = 0;
-  for (let i = 0; i <= BREAK_AFTER_IDX; i++) if (isPeriodFree(teacher, day, i)) before++;
-  for (let i = BREAK_AFTER_IDX + 1; i < PERIODS.length; i++) if (isPeriodFree(teacher, day, i)) after++;
+  let before = 0,
+    after = 0;
+  for (let i = 0; i <= BREAK_AFTER_IDX; i++)
+    if (isPeriodFree(teacher, day, i)) before++;
+  for (let i = BREAK_AFTER_IDX + 1; i < PERIODS.length; i++)
+    if (isPeriodFree(teacher, day, i)) after++;
   return { before, after };
-}
-
-interface Column {
-  id: number;
-  selectedTeacher: string;
-  substituteTeacher: string[];
-  classValues: string[];
 }
 
 function getAvailableSubstitutes(
@@ -174,10 +282,18 @@ function getAvailableSubstitutes(
 ) {
   const absent = new Set(columns.map((c) => c.selectedTeacher).filter(Boolean));
   const alreadySub = new Set(
-    columns.filter((c) => c.id !== currentColId).map((c) => c.substituteTeacher[periodIdx]).filter(Boolean)
+    columns
+      .filter((c) => c.id !== currentColId)
+      .map((c) => c.substituteTeacher[periodIdx])
+      .filter(Boolean),
   );
   return teachers
-    .filter((t) => !absent.has(t.name) && !alreadySub.has(t.name) && isPeriodFree(t, day, periodIdx))
+    .filter(
+      (t) =>
+        !absent.has(t.name) &&
+        !alreadySub.has(t.name) &&
+        isPeriodFree(t, day, periodIdx),
+    )
     .map((t) => {
       const { before, after } = getFreePeriodCounts(t, day);
       return { ...t, freeBefore: before, freeAfter: after };
@@ -189,7 +305,7 @@ function buildPrintHTML(
   columns: Column[],
   date: string,
   selectedDay: string,
-  schoolInfo: SchoolInfo
+  schoolInfo: SchoolInfo,
 ) {
   const totalCols = columns.length;
   const teacherW = Math.floor((100 - 9 - 6 - 5) / totalCols);
@@ -212,63 +328,60 @@ function buildPrintHTML(
     <div class="date-bar">
       <span>Date: <strong>${date}</strong></span>
       <span>Day: <strong>${selectedDay}</strong></span>
-    </div>
-  `;
+    </div>`;
 
   const theadHTML = `
     <tr>
-      <th colspan="3" rowspan="2" style="width:20%;text-align:center;vertical-align:middle;font-size:11px;letter-spacing:1px;">Period / Time</th>
-      <th colspan="${totalCols}" style="text-align:center;font-size:13px;letter-spacing:3px;font-weight:900;background:#1e293b;border-bottom:2px solid #475569!important;">TEACHERS ON LEAVE</th>
+      <th colspan="3" rowspan="2" style="width:18%;text-align:center;vertical-align:middle;font-size:8px;letter-spacing:0.5px;">Period / Time</th>
+      <th colspan="${totalCols}" style="text-align:center;font-size:10px;letter-spacing:2px;font-weight:900;background:#1e293b;border-bottom:2px solid #475569!important;">TEACHERS ON LEAVE</th>
     </tr>
     <tr>
-      ${columns.map((col) => `
-        <th style="width:${teacherW}%;background:#1e3a5f;padding:5px 4px!important;">
-          <div style="font-size:12px;font-weight:800;color:white;">${col.selectedTeacher || "— Not Selected —"}</div>
-          <div style="font-size:8.5px;font-weight:400;color:#93c5fd;margin-top:1px;">${selectedDay}</div>
-        </th>`).join("")}
-    </tr>
-  `;
+      ${columns
+        .map(
+          (col) => `
+        <th style="width:${teacherW}%;background:#1e3a5f;padding:3px 2px!important;">
+          <div style="font-size:9px;font-weight:800;color:white;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
+          <div style="font-size:7px;font-weight:400;color:#93c5fd;margin-top:1px;">${selectedDay}</div>
+        </th>`,
+        )
+        .join("")}
+    </tr>`;
 
   let tbodyHTML = "";
   PERIODS.forEach((period, pIdx) => {
     tbodyHTML += `<tr>
-      <td rowspan="3" class="period-cell" style="width:5%;text-align:center;">
-        <span class="p-label">${period.label}</span>
-      </td>
-      <td rowspan="3" class="period-cell" style="width:7%;text-align:center;">
-        <span class="p-time">${period.time}</span>
-      </td>
+      <td rowspan="3" class="period-cell" style="width:5%;text-align:center;"><span class="p-label">${period.label}</span></td>
+      <td rowspan="3" class="period-cell" style="width:7%;text-align:center;"><span class="p-time">${period.time}</span></td>
       <td class="row-class" style="width:6%;">📚 Class</td>
-      ${columns.map((col) => {
-        const cv = col.classValues[pIdx] ?? "";
-        const isFree = col.selectedTeacher && (cv.trim() === "" || cv.trim().toLowerCase() === "free");
-        return `<td style="width:${teacherW}%;text-align:center;">
-          ${isFree ? `<span class="val-free">Free</span>` : `<span class="val-class">${cv || ""}</span>`}
-        </td>`;
-      }).join("")}
+      ${columns
+        .map((col) => {
+          const cv = col.classValues[pIdx] ?? "";
+          const isFree =
+            col.selectedTeacher &&
+            (cv.trim() === "" || cv.trim().toLowerCase() === "free");
+          return `<td style="width:${teacherW}%;text-align:center;">${isFree ? `<span class="val-free">Free</span>` : `<span class="val-class">${cv || ""}</span>`}</td>`;
+        })
+        .join("")}
     </tr>`;
-
     tbodyHTML += `<tr>
       <td class="row-sub">👤 Teacher</td>
-      ${columns.map((col) => {
-        const cv = col.classValues[pIdx] ?? "";
-        const isFree = col.selectedTeacher ? (cv.trim() === "" || cv.trim().toLowerCase() === "free") : true;
-        const sub = col.substituteTeacher[pIdx] || "";
-        return `<td style="text-align:center;">
-          ${isFree ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}</span>`}
-        </td>`;
-      }).join("")}
+      ${columns
+        .map((col) => {
+          const cv = col.classValues[pIdx] ?? "";
+          const isFree = col.selectedTeacher
+            ? cv.trim() === "" || cv.trim().toLowerCase() === "free"
+            : true;
+          const sub = col.substituteTeacher[pIdx] || "";
+          return `<td style="text-align:center;">${isFree ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}</span>`}</td>`;
+        })
+        .join("")}
     </tr>`;
-
     tbodyHTML += `<tr>
       <td class="row-sign">✍️ Sign</td>
       ${columns.map(() => `<td><span class="sign-space"></span></td>`).join("")}
     </tr>`;
-
     if (pIdx === BREAK_AFTER_IDX) {
-      tbodyHTML += `<tr class="break-row">
-        <td colspan="${3 + totalCols}">━━━ MAJOR BREAK (12:05 – 12:25) ━━━</td>
-      </tr>`;
+      tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (12:05 – 12:25) ━━━</td></tr>`;
     }
   });
 
@@ -280,22 +393,18 @@ function buildPrintHTML(
           <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
         </div>
       </td>
-    </tr>
-  `;
+    </tr>`;
 
-  return `
-    ${headerHTML}
-    <table>
-      <thead>${theadHTML}</thead>
-      <tbody>${tbodyHTML}</tbody>
-      <tfoot>${tfootHTML}</tfoot>
-    </table>
-  `;
+  return `${headerHTML}<table><thead>${theadHTML}</thead><tbody>${tbodyHTML}</tbody><tfoot>${tfootHTML}</tfoot></table>`;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
-  const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() => loadSchoolInfo());
+  const [currentPage, setCurrentPage] = useState<"home" | "records">("home");
+
+  const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() =>
+    loadSchoolInfo(),
+  );
   const [showSchoolEdit, setShowSchoolEdit] = useState(false);
   const [showSheetEdit, setShowSheetEdit] = useState(false);
   const [sheetUrl, setSheetUrl] = useState<string>(loadSheetUrl);
@@ -307,18 +416,75 @@ export default function App() {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  const [selectedDay, setSelectedDay] = useState(getTodayDay);
-  const [date, setDate] = useState(() =>
-    new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" })
+  const [selectedDay, setSelectedDay] = useState<string>(loadDay);
+  const [date, setDate] = useState<string>(loadDate);
+  const [columns, setColumns] = useState<Column[]>(loadColumns);
+
+  const [records, setRecords] = useState<AdjustmentRecord[]>(loadRecords);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
+    "idle",
   );
-  const [columns, setColumns] = useState<Column[]>([
-    { id: 1, selectedTeacher: "", substituteTeacher: Array(9).fill(""), classValues: Array(9).fill("") },
-  ]);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Save schoolInfo ──────────────────────────────────────────────────────
-  useEffect(() => { saveSchoolInfo(schoolInfo); }, [schoolInfo]);
+  // ── Persist basic states ───────────────────────────────────────────────────
+  useEffect(() => {
+    saveSchoolInfo(schoolInfo);
+  }, [schoolInfo]);
+  useEffect(() => {
+    localStorage.setItem(LS_COLUMNS_KEY, JSON.stringify(columns));
+  }, [columns]);
+  useEffect(() => {
+    localStorage.setItem(LS_DATE_KEY, date);
+  }, [date]);
+  useEffect(() => {
+    localStorage.setItem(LS_DAY_KEY, selectedDay);
+  }, [selectedDay]);
 
-  // ── Fetch sheet ──────────────────────────────────────────────────────────
+  // ── Auto-save records (debounced, same date = overwrite) ───────────────────
+  useEffect(() => {
+    const hasData = columns.some((col) => col.selectedTeacher.trim() !== "");
+    if (!hasData || !loaded) return;
+
+    setSaveStatus("saving");
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+
+    autoSaveTimer.current = setTimeout(() => {
+      let totalSubs = 0;
+      columns.forEach((col) => {
+        totalSubs += col.substituteTeacher.filter(
+          (s) => s.trim() !== "",
+        ).length;
+      });
+
+      const record: AdjustmentRecord = {
+        id: date,
+        date,
+        day: selectedDay,
+        timestamp: Date.now(),
+        columns: JSON.parse(JSON.stringify(columns)),
+        totalTeachers: columns.filter((c) => c.selectedTeacher).length,
+        totalSubstitutes: totalSubs,
+      };
+
+      setRecords((prev) => {
+        const exists = prev.some((r) => r.id === date);
+        const updated = exists
+          ? prev.map((r) => (r.id === date ? record : r))
+          : [record, ...prev];
+        saveRecords(updated);
+        return updated;
+      });
+
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    }, AUTO_SAVE_DELAY);
+
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    };
+  }, [columns, date, selectedDay, loaded]);
+
+  // ── Fetch sheet ────────────────────────────────────────────────────────────
   const fetchSheet = useCallback(async (url: string) => {
     setLoading(true);
     setError("");
@@ -326,39 +492,40 @@ export default function App() {
     try {
       const sheetId = url.split("/d/")[1]?.split("/")[0];
       if (!sheetId) throw new Error("Bad URL");
-      const res = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`);
+      const res = await fetch(
+        `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`,
+      );
       if (!res.ok) throw new Error("Fetch failed");
       const text = await res.text();
       const rows = parseCSV(text);
       const extracted = extractTeachers(rows);
       if (extracted.length === 0) {
         setError("Koi teacher data nahi mila. Sheet publicly shared hai?");
-        setLoaded(false);
         return;
       }
       setTeachers(extracted);
-      const today = getTodayDay();
-      setSelectedDay(today);
-      setColumns([{ id: 1, selectedTeacher: "", substituteTeacher: Array(9).fill(""), classValues: Array(9).fill("") }]);
       setLoaded(true);
     } catch {
-      setError("Sheet load nahi hui. Publicly shared hai? (Anyone with link → Viewer)");
+      setError(
+        "Sheet load nahi hui. Publicly shared hai? (Anyone with link → Viewer)",
+      );
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Auto-fetch on mount
-  useEffect(() => { fetchSheet(sheetUrl); }, []);
+  useEffect(() => {
+    fetchSheet(sheetUrl);
+  }, []);
 
-  // ── Print area update ────────────────────────────────────────────────────
+  // ── Print area update ──────────────────────────────────────────────────────
   useEffect(() => {
     const pa = document.getElementById("print-area");
     if (!pa || !loaded) return;
     pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo);
   }, [columns, date, selectedDay, loaded, schoolInfo]);
 
-  // ── Logo upload ──────────────────────────────────────────────────────────
+  // ── Logo handlers ──────────────────────────────────────────────────────────
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -377,7 +544,7 @@ export default function App() {
     localStorage.removeItem(LS_LOGO_KEY);
   };
 
-  // ── Save & reload sheet URL ───────────────────────────────────────────────
+  // ── Sheet URL handler ──────────────────────────────────────────────────────
   const handleSaveSheetUrl = () => {
     const trimmed = sheetUrlDraft.trim();
     if (!trimmed) return;
@@ -387,20 +554,91 @@ export default function App() {
     fetchSheet(trimmed);
   };
 
-  // ── Column / teacher handlers ─────────────────────────────────────────────
+  // ── Reset adjustment data ──────────────────────────────────────────────────
+  const handleResetData = () => {
+    if (
+      !confirm(
+        "⚠️ Kya aap adjustment data clear karna chahte ho?\n\n(Teacher selections, date, day)\n\nSchool info aur logo safe rahenge.",
+      )
+    )
+      return;
+    localStorage.removeItem(LS_COLUMNS_KEY);
+    localStorage.removeItem(LS_DATE_KEY);
+    localStorage.removeItem(LS_DAY_KEY);
+    setColumns([
+      {
+        id: 1,
+        selectedTeacher: "",
+        substituteTeacher: Array(9).fill(""),
+        classValues: Array(9).fill(""),
+      },
+    ]);
+    setDate(
+      new Date().toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      }),
+    );
+    setSelectedDay(getTodayDay());
+  };
+
+  // ── Records handlers ───────────────────────────────────────────────────────
+  const handleDeleteRecord = (id: string) => {
+    if (!confirm("⚠️ Kya aap is record ko delete karna chahte ho?")) return;
+    setRecords((prev) => {
+      const updated = prev.filter((r) => r.id !== id);
+      saveRecords(updated);
+      return updated;
+    });
+  };
+
+  const handleLoadRecord = (record: AdjustmentRecord) => {
+    if (
+      !confirm(
+        `📥 Load this record?\n\nDate: ${record.date}\nDay: ${record.day}\n\nCurrent adjustment data replace ho jayega!`,
+      )
+    )
+      return;
+    setDate(record.date);
+    setSelectedDay(record.day);
+    setColumns(JSON.parse(JSON.stringify(record.columns)));
+    setCurrentPage("home");
+    alert("✅ Record loaded successfully!");
+  };
+
+  const handlePrintRecord = (record: AdjustmentRecord) => {
+    const pa = document.getElementById("print-area");
+    if (pa) {
+      pa.innerHTML = buildPrintHTML(
+        record.columns,
+        record.date,
+        record.day,
+        schoolInfo,
+      );
+      window.print();
+    }
+  };
+
+  // ── Column / teacher handlers ──────────────────────────────────────────────
   const handleTeacherSelect = (colId: number, name: string) =>
     setColumns((prev) =>
       prev.map((col) => {
         if (col.id !== colId) return col;
         const t = teachers.find((t) => t.name === name);
-        const ds = t?.schedule[selectedDay] ?? t?.schedule[Object.keys(t?.schedule ?? {})[0]] ?? [];
+        const ds =
+          t?.schedule[selectedDay] ??
+          t?.schedule[Object.keys(t?.schedule ?? {})[0]] ??
+          [];
         return {
           ...col,
           selectedTeacher: name,
-          classValues: Array(9).fill("").map((_, i) => ds[i] ?? ""),
+          classValues: Array(9)
+            .fill("")
+            .map((_, i) => ds[i] ?? ""),
           substituteTeacher: Array(9).fill(""),
         };
-      })
+      }),
     );
 
   const handleGlobalDayChange = (day: string) => {
@@ -412,10 +650,12 @@ export default function App() {
         const ds = t.schedule[day] ?? [];
         return {
           ...col,
-          classValues: Array(9).fill("").map((_, i) => ds[i] ?? ""),
+          classValues: Array(9)
+            .fill("")
+            .map((_, i) => ds[i] ?? ""),
           substituteTeacher: Array(9).fill(""),
         };
-      })
+      }),
     );
   };
 
@@ -426,7 +666,7 @@ export default function App() {
         const cv = [...col.classValues];
         cv[pIdx] = val;
         return { ...col, classValues: cv };
-      })
+      }),
     );
 
   const updateSubstitute = (colId: number, pIdx: number, val: string) =>
@@ -436,14 +676,19 @@ export default function App() {
         const st = [...col.substituteTeacher];
         st[pIdx] = val;
         return { ...col, substituteTeacher: st };
-      })
+      }),
     );
 
   const addColumn = () => {
     const nextId = Math.max(...columns.map((c) => c.id)) + 1;
     setColumns((prev) => [
       ...prev,
-      { id: nextId, selectedTeacher: "", substituteTeacher: Array(9).fill(""), classValues: Array(9).fill("") },
+      {
+        id: nextId,
+        selectedTeacher: "",
+        substituteTeacher: Array(9).fill(""),
+        classValues: Array(9).fill(""),
+      },
     ]);
   };
 
@@ -454,18 +699,17 @@ export default function App() {
 
   const handlePrint = () => {
     const pa = document.getElementById("print-area");
-    if (pa) pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo);
+    if (pa)
+      pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo);
     window.print();
   };
 
-  // ════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
   return (
     <div className="min-h-screen bg-slate-100" style={{ fontSize: "15px" }}>
-
       {/* ── SCHOOL HEADER ── */}
       <div className="bg-white border-b-4 border-slate-800 shadow-md">
         <div className="max-w-screen-xl mx-auto px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
-
           {/* Logo + School Name */}
           <div className="flex items-center gap-4">
             <div className="relative flex-shrink-0">
@@ -475,7 +719,11 @@ export default function App() {
                 title="Click to change logo"
               >
                 {schoolInfo.logoUrl ? (
-                  <img src={schoolInfo.logoUrl} alt="logo" className="w-full h-full object-cover" />
+                  <img
+                    src={schoolInfo.logoUrl}
+                    alt="logo"
+                    className="w-full h-full object-cover"
+                  />
                 ) : (
                   <span style={{ fontSize: "32px" }}>🏫</span>
                 )}
@@ -486,57 +734,110 @@ export default function App() {
                   title="Remove logo"
                   className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition shadow"
                   style={{ fontSize: "13px", lineHeight: "1" }}
-                >✕</button>
+                >
+                  ✕
+                </button>
               )}
             </div>
-            <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+            <input
+              ref={logoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleLogoUpload}
+            />
 
             <div>
-              <div style={{ fontSize: "24px", fontWeight: 900, letterSpacing: "1px", lineHeight: 1.1 }}>
+              <div
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 900,
+                  letterSpacing: "1px",
+                  lineHeight: 1.1,
+                }}
+              >
                 <span className="text-slate-900">{schoolInfo.name1} </span>
                 <span className="text-red-600">{schoolInfo.name2}</span>
               </div>
-              <div style={{ fontSize: "15px", fontWeight: 700, color: "#1d4ed8", letterSpacing: "3px" }}>
+              <div
+                style={{
+                  fontSize: "15px",
+                  fontWeight: 700,
+                  color: "#1d4ed8",
+                  letterSpacing: "3px",
+                }}
+              >
                 {schoolInfo.type}
               </div>
-              <div style={{ fontSize: "13px", color: "#64748b" }}>{schoolInfo.address}</div>
-              <div style={{ fontSize: "13px", color: "#64748b" }}>{schoolInfo.phone}</div>
+              <div style={{ fontSize: "13px", color: "#64748b" }}>
+                {schoolInfo.address}
+              </div>
+              <div style={{ fontSize: "13px", color: "#64748b" }}>
+                {schoolInfo.phone}
+              </div>
             </div>
           </div>
 
           {/* Right side */}
           <div className="text-right flex-shrink-0">
-            <div style={{ fontSize: "18px", fontWeight: 800, color: "#1e293b" }} className="uppercase tracking-wide">
+            <div
+              style={{ fontSize: "18px", fontWeight: 800, color: "#1e293b" }}
+              className="uppercase tracking-wide"
+            >
               Teacher's Adjustment System
             </div>
-            <div style={{ fontSize: "13px", color: "#64748b" }}>Academic Year 2026-27</div>
-            <div className="flex gap-2 justify-end mt-2">
-              {/* Edit Google Sheet button */}
-              <button
-                onClick={() => { setSheetUrlDraft(sheetUrl); setShowSheetEdit(!showSheetEdit); setShowSchoolEdit(false); }}
-                className="bg-green-700 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-green-600 transition"
-              >
-                📊 Edit Google Sheet
-              </button>
-              <button
-                onClick={() => { setShowSchoolEdit(!showSchoolEdit); setShowSheetEdit(false); }}
-                className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-slate-600 transition"
-              >
-                {showSchoolEdit ? "✅ Close Edit" : "✏️ Edit School Info"}
-              </button>
+            <div style={{ fontSize: "13px", color: "#64748b" }}>
+              Academic Year 2026-27
+            </div>
+
+            <div className="flex flex-col gap-2 mt-2">
+              <div className="flex gap-2 justify-end flex-wrap">
+                <button
+                  onClick={() => {
+                    setSheetUrlDraft(sheetUrl);
+                    setShowSheetEdit(!showSheetEdit);
+                    setShowSchoolEdit(false);
+                  }}
+                  className="bg-green-700 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-green-600 transition"
+                >
+                  📊 Edit Google Sheet
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSchoolEdit(!showSchoolEdit);
+                    setShowSheetEdit(false);
+                  }}
+                  className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-slate-600 transition"
+                >
+                  {showSchoolEdit ? "✅ Close Edit" : "✏️ Edit School Info"}
+                </button>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={handleResetData}
+                  className="bg-orange-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold hover:bg-orange-700 transition"
+                  title="Clear only adjustment data"
+                >
+                  🔄 Reset Adjustments
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* ── Sheet URL Edit Panel ── */}
+        {/* Sheet URL Edit Panel */}
         {showSheetEdit && (
           <div className="max-w-screen-xl mx-auto px-6 pb-5">
             <div className="bg-green-50 border border-green-300 rounded-xl p-4">
-              <h3 className="font-bold text-green-800 mb-3" style={{ fontSize: "15px" }}>
+              <h3
+                className="font-bold text-green-800 mb-3"
+                style={{ fontSize: "15px" }}
+              >
                 📊 Google Sheet URL Edit
               </h3>
               <p className="text-green-700 text-xs mb-3">
-                Sheet publicly shared honi chahiye — <strong>"Anyone with link → Viewer"</strong>
+                Sheet publicly shared honi chahiye —{" "}
+                <strong>"Anyone with link → Viewer"</strong>
               </p>
               <div className="flex gap-2 flex-wrap">
                 <input
@@ -561,38 +862,52 @@ export default function App() {
                 </button>
               </div>
               <p className="text-xs text-green-600 mt-2">
-                Current: <span className="font-mono text-green-800 break-all">{sheetUrl}</span>
+                Current:{" "}
+                <span className="font-mono text-green-800 break-all">
+                  {sheetUrl}
+                </span>
               </p>
             </div>
           </div>
         )}
 
-        {/* ── School Info Edit Panel ── */}
+        {/* School Info Edit Panel */}
         {showSchoolEdit && (
           <div className="max-w-screen-xl mx-auto px-6 pb-5">
             <div className="bg-slate-50 border border-slate-300 rounded-xl p-4">
-              <h3 className="font-bold text-slate-700 mb-3" style={{ fontSize: "15px" }}>
+              <h3
+                className="font-bold text-slate-700 mb-3"
+                style={{ fontSize: "15px" }}
+              >
                 ✏️ School Information Edit
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                {([
-                  ["School Name Part 1", "name1"],
-                  ["School Name Part 2 (Red)", "name2"],
-                  ["School Type", "type"],
-                  ["Address", "address"],
-                  ["Phone", "phone"],
-                ] as [string, keyof SchoolInfo][]).map(([label, key]) => (
+                {(
+                  [
+                    ["School Name Part 1", "name1"],
+                    ["School Name Part 2 (Red)", "name2"],
+                    ["School Type", "type"],
+                    ["Address", "address"],
+                    ["Phone", "phone"],
+                  ] as [string, keyof SchoolInfo][]
+                ).map(([label, key]) => (
                   <div key={key}>
-                    <label className="block text-xs font-semibold text-slate-600 mb-1">{label}</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      {label}
+                    </label>
                     <input
                       value={schoolInfo[key] as string}
-                      onChange={(e) => setSchoolInfo((p) => ({ ...p, [key]: e.target.value }))}
+                      onChange={(e) =>
+                        setSchoolInfo((p) => ({ ...p, [key]: e.target.value }))
+                      }
                       className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400"
                     />
                   </div>
                 ))}
                 <div className="flex flex-col gap-2">
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">Logo</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">
+                    Logo
+                  </label>
                   <button
                     onClick={() => logoInputRef.current?.click()}
                     className="bg-blue-600 text-white px-3 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700"
@@ -610,347 +925,995 @@ export default function App() {
                 </div>
               </div>
               <p className="text-xs text-slate-500 mt-3">
-                💾 Sab changes automatically save hote hain — page refresh ke baad bhi rahenge
+                💾 Sab changes automatically save hote hain — page refresh ke
+                baad bhi rahenge
               </p>
             </div>
           </div>
         )}
+
+        {/* Navigation Tabs */}
+        <div className="max-w-screen-xl mx-auto px-6">
+          <div className="flex gap-1 border-b-2 border-slate-200">
+            <button
+              onClick={() => setCurrentPage("home")}
+              className={`px-6 py-3 font-bold text-sm transition ${currentPage === "home" ? "bg-slate-800 text-white border-b-4 border-slate-800" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+            >
+              🏠 Adjustment Form
+            </button>
+            <button
+              onClick={() => setCurrentPage("records")}
+              className={`px-6 py-3 font-bold text-sm transition relative ${currentPage === "records" ? "bg-blue-600 text-white border-b-4 border-blue-600" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+            >
+              📋 Records
+              {records.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+                  {records.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* ── MAIN CONTENT ── */}
       <div className="max-w-screen-xl mx-auto p-4 md:p-6">
-
-        {/* Loading spinner */}
-        {loading && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
-            <div className="spinner mb-4"></div>
-            <p className="text-slate-600 font-semibold" style={{ fontSize: "16px" }}>
-              ⏳ Timetable data load ho raha hai…
-            </p>
-            <p className="text-slate-400 mt-1" style={{ fontSize: "13px" }}>
-              Google Sheet se data fetch ho raha hai, please wait…
-            </p>
-          </div>
-        )}
-
-        {/* Error state */}
-        {!loading && error && (
-          <div className="bg-white rounded-xl border border-red-200 shadow-sm p-8 text-center">
-            <div className="text-5xl mb-4">⚠️</div>
-            <p className="text-red-700 font-bold mb-2" style={{ fontSize: "16px" }}>{error}</p>
-            <p className="text-slate-500 mb-4" style={{ fontSize: "13px" }}>
-              Sheet publicly shared honi chahiye — "Anyone with link → Viewer"
-            </p>
-            <div className="flex gap-3 justify-center flex-wrap">
-              <button
-                onClick={() => fetchSheet(sheetUrl)}
-                className="bg-slate-800 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-slate-600"
-              >
-                🔄 Retry
-              </button>
-              <button
-                onClick={() => { setSheetUrlDraft(sheetUrl); setShowSheetEdit(true); }}
-                className="bg-green-700 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-green-600"
-              >
-                📊 Edit Sheet URL
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Adjustment Table */}
-        {!loading && loaded && (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div>
-                <h2 style={{ fontSize: "17px" }} className="font-bold text-slate-900 uppercase tracking-wide">
-                  Teacher's Adjustment Register
-                </h2>
-                <p style={{ fontSize: "13px" }} className="text-slate-500 mt-1">
-                  ✅ <strong>{teachers.length} teachers</strong> loaded &nbsp;·&nbsp;
-                  Date: <span className="font-semibold text-slate-700">{date}</span>
+        {/* HOME PAGE */}
+        {currentPage === "home" && (
+          <>
+            {loading && (
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-12 text-center">
+                <div className="spinner mb-4"></div>
+                <p
+                  className="text-slate-600 font-semibold"
+                  style={{ fontSize: "16px" }}
+                >
+                  ⏳ Timetable data load ho raha hai…
+                </p>
+                <p className="text-slate-400 mt-1" style={{ fontSize: "13px" }}>
+                  Google Sheet se data fetch ho raha hai, please wait…
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  style={{ fontSize: "14px" }}
-                  className="border border-slate-300 rounded-lg px-3 py-2 w-32"
-                />
-                <select
-                  value={selectedDay}
-                  onChange={(e) => handleGlobalDayChange(e.target.value)}
-                  style={{ fontSize: "14px" }}
-                  className="border border-slate-300 rounded-lg px-3 py-2 font-semibold text-slate-700"
+            )}
+
+            {!loading && error && (
+              <div className="bg-white rounded-xl border border-red-200 shadow-sm p-8 text-center">
+                <div className="text-5xl mb-4">⚠️</div>
+                <p
+                  className="text-red-700 font-bold mb-2"
+                  style={{ fontSize: "16px" }}
                 >
-                  {DAYS.map((d) => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <button
-                  onClick={addColumn}
-                  style={{ fontSize: "14px" }}
-                  className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700"
-                >
-                  + Add Column
-                </button>
-                <button
-                  onClick={handlePrint}
-                  style={{ fontSize: "14px" }}
-                  className="bg-slate-800 text-white px-4 py-2 rounded-lg font-semibold hover:bg-slate-600"
-                >
-                  🖨️ Print
-                </button>
+                  {error}
+                </p>
+                <p className="text-slate-500 mb-4" style={{ fontSize: "13px" }}>
+                  Sheet publicly shared honi chahiye — "Anyone with link →
+                  Viewer"
+                </p>
+                <div className="flex gap-3 justify-center flex-wrap">
+                  <button
+                    onClick={() => fetchSheet(sheetUrl)}
+                    className="bg-slate-800 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-slate-600"
+                  >
+                    🔄 Retry
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSheetUrlDraft(sheetUrl);
+                      setShowSheetEdit(true);
+                    }}
+                    className="bg-green-700 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-green-600"
+                  >
+                    📊 Edit Sheet URL
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Legend */}
-            <div className="mb-4 flex items-center gap-2 flex-wrap">
-              <span style={{ fontSize: "13px" }} className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full font-medium">
-                💡 <strong>Name (before,after)</strong> = break se pehle aur baad free lectures
-              </span>
-              <span style={{ fontSize: "13px" }} className="bg-yellow-50 text-yellow-700 px-3 py-1.5 rounded-full font-medium border border-yellow-200">
-                Break = 5th period ke baad
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse" style={{ fontSize: "14px" }}>
-                <thead>
-                  {/* Row 1 */}
-                  <tr className="bg-slate-900 text-white">
-                    <th colSpan={3} rowSpan={2} className="border border-slate-700 px-3 py-3 text-center font-semibold uppercase align-middle">
-                      Period / Time
-                    </th>
-                    <th
-                      colSpan={columns.length}
-                      className="border border-slate-700 px-3 py-2 text-center font-bold uppercase"
-                      style={{ fontSize: "16px", letterSpacing: "3px" }}
+            {!loading && loaded && (
+              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                  <div>
+                    <h2
+                      style={{ fontSize: "17px" }}
+                      className="font-bold text-slate-900 uppercase tracking-wide"
                     >
-                      TEACHERS ON LEAVE
-                    </th>
-                  </tr>
-
-                  {/* Row 2 — teacher name headers */}
-                  <tr className="bg-slate-800 text-white">
-                    {columns.map((col) => (
-                      <th key={col.id} className="border border-slate-700 px-3 py-2 min-w-[220px]">
-                        <div className="flex items-center justify-between">
-                          <div className="text-left">
-                            <div style={{ fontSize: "14px" }} className="font-bold">
-                              {col.selectedTeacher || "— Select Teacher —"}
-                            </div>
-                            {col.selectedTeacher && (
-                              <div style={{ fontSize: "11px", color: "#93c5fd" }}>{selectedDay}</div>
-                            )}
-                          </div>
-                          {columns.length > 1 && (
-                            <button
-                              onClick={() => removeColumn(col.id)}
-                              className="text-red-300 hover:text-white ml-2 flex-shrink-0"
-                              style={{ fontSize: "18px" }}
-                            >✕</button>
-                          )}
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-
-                  {/* Absent Teacher selector row — only teacher dropdown, no day/pin */}
-                  <tr className="bg-blue-50">
-                    <td
-                      colSpan={3}
-                      className="border border-slate-300 px-3 py-2 font-bold text-slate-700 text-center"
-                      style={{ fontSize: "14px" }}
+                      Teacher's Adjustment Register
+                    </h2>
+                    <p
+                      style={{ fontSize: "13px" }}
+                      className="text-slate-500 mt-1 flex items-center gap-2 flex-wrap"
                     >
-                      Absent Teacher
-                    </td>
-                    {columns.map((col) => (
-                      <td key={col.id} className="border border-slate-300 px-2 py-2">
-                        <select
-                          value={col.selectedTeacher}
-                          onChange={(e) => handleTeacherSelect(col.id, e.target.value)}
-                          style={{ fontSize: "14px" }}
-                          className="w-full border-2 border-blue-400 rounded-lg px-2 py-2 bg-white text-blue-900 font-bold"
-                        >
-                          <option value="">-- Select Absent Teacher --</option>
-                          {teachers.map((t) => (
-                            <option key={t.name} value={t.name}>{t.name}</option>
-                          ))}
-                        </select>
-                      </td>
-                    ))}
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {PERIODS.map((period, pIdx) => (
-                    <React.Fragment key={pIdx}>
-                      {/* CLASS ROW */}
-                      <tr>
-                        <td
-                          rowSpan={3}
-                          className="border border-slate-300 text-center bg-slate-900 text-white font-bold px-1 py-2"
-                          style={{ width: "50px" }}
-                        >
-                          <div style={{ fontSize: "15px" }} className="font-extrabold">{period.label}</div>
-                        </td>
-                        <td
-                          rowSpan={3}
-                          className="border border-slate-300 text-center bg-slate-800 text-slate-300 px-1 py-2"
-                          style={{ width: "70px", fontSize: "11px" }}
-                        >
-                          {period.time}
-                        </td>
-                        <td
-                          className="border border-slate-300 px-2 py-2 font-bold text-amber-800 uppercase bg-amber-50 whitespace-nowrap"
-                          style={{ fontSize: "13px", width: "70px" }}
-                        >
-                          📚 Class
-                        </td>
-                        {columns.map((col) => {
-                          const classVal = col.classValues[pIdx] ?? "";
-                          const isFree = col.selectedTeacher && (classVal.trim() === "" || classVal.trim().toLowerCase() === "free");
-                          return (
-                            <td key={col.id} className="border border-slate-300 px-2 py-1">
-                              {isFree ? (
-                                <div
-                                  className="w-full text-center font-bold px-2 py-2 rounded-md bg-slate-100 text-slate-400 border-2 border-dashed border-slate-300"
-                                  style={{ fontSize: "14px" }}
-                                >Free</div>
-                              ) : (
-                                <input
-                                  type="text"
-                                  value={classVal}
-                                  onChange={(e) => updateClassValue(col.id, pIdx, e.target.value)}
-                                  placeholder={col.selectedTeacher ? "" : "—"}
-                                  style={{ fontSize: "15px" }}
-                                  className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
-                                />
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-
-                      {/* SUB ROW */}
-                      <tr>
-                        <td
-                          className="border border-slate-300 px-2 py-2 font-bold text-green-800 uppercase bg-green-50 whitespace-nowrap"
-                          style={{ fontSize: "13px" }}
-                        >
-                          👤 Sub.
-                        </td>
-                        {columns.map((col) => {
-                          const classVal = col.classValues[pIdx] ?? "";
-                          const isFree = col.selectedTeacher
-                            ? classVal.trim() === "" || classVal.trim().toLowerCase() === "free"
-                            : true;
-                          const avail = getAvailableSubstitutes(teachers, columns, col.id, pIdx, selectedDay);
-                          const cur = col.substituteTeacher[pIdx] || "";
-                          const isValid = cur && avail.some((t) => t.name === cur);
-                          return (
-                            <td key={col.id} className="border border-slate-300 px-2 py-1">
-                              {isFree || !col.selectedTeacher ? (
-                                <div className="w-full text-center text-slate-300 italic py-2" style={{ fontSize: "13px" }}>
-                                  — Free —
-                                </div>
-                              ) : (
-                                <div>
-                                  <select
-                                    value={cur}
-                                    onChange={(e) => updateSubstitute(col.id, pIdx, e.target.value)}
-                                    style={{ fontSize: "13px" }}
-                                    className={`w-full border rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-green-400 ${cur ? "border-green-400 bg-green-50 text-green-800 font-semibold" : "border-slate-300"}`}
-                                  >
-                                    <option value="">
-                                      {avail.length === 0 ? "⚠️ No free teacher" : `-- Select Sub (${avail.length} free) --`}
-                                    </option>
-                                    {cur && !isValid && (
-                                      <option value={cur} style={{ color: "orange" }}>⚠️ {cur} (now busy)</option>
-                                    )}
-                                    {avail.map((t) => (
-                                      <option key={t.name} value={t.name}>
-                                        {t.name} ({t.freeBefore},{t.freeAfter})
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <div className="mt-1 flex justify-between px-1">
-                                    {avail.length === 0 ? (
-                                      <span style={{ fontSize: "12px" }} className="text-red-500 font-semibold">⚠️ Koi free nahi!</span>
-                                    ) : (
-                                      <span style={{ fontSize: "12px" }} className="text-green-600">{avail.length} available</span>
-                                    )}
-                                    <span style={{ fontSize: "11px" }} className="text-slate-400">(before,after)</span>
-                                  </div>
-                                </div>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-
-                      {/* SIGN ROW */}
-                      <tr>
-                        <td
-                          className="border border-slate-300 px-2 py-2 font-bold text-purple-800 uppercase bg-purple-50 whitespace-nowrap"
-                          style={{ fontSize: "13px" }}
-                        >
-                          ✍️ Sign
-                        </td>
-                        {columns.map((col) => {
-                          const cv = col.classValues[pIdx] ?? "";
-                          const isFree = cv.trim() === "" || cv.trim().toLowerCase() === "free";
-                          return (
-                            <td
-                              key={col.id}
-                              className={`border border-slate-300 px-2 py-6 ${isFree ? "bg-slate-50" : ""}`}
-                            />
-                          );
-                        })}
-                      </tr>
-
-                      {/* BREAK ROW */}
-                      {pIdx === BREAK_AFTER_IDX && (
-                        <tr>
-                          <td
-                            colSpan={3 + columns.length}
-                            className="border border-yellow-400 text-center font-bold py-2"
-                            style={{ background: "#fef9c3", color: "#854d0e", fontSize: "13px" }}
-                          >
-                            ━━━ MAJOR BREAK (12:05 – 12:25) ━━━
-                          </td>
-                        </tr>
+                      ✅ <strong>{teachers.length} teachers</strong> loaded
+                      &nbsp;·&nbsp; Date:{" "}
+                      <span className="font-semibold text-slate-700">
+                        {date}
+                      </span>
+                      {saveStatus === "saving" && (
+                        <span className="text-yellow-600 font-semibold animate-pulse">
+                          💾 Saving...
+                        </span>
                       )}
-                    </React.Fragment>
-                  ))}
-                </tbody>
-
-                <tfoot>
-                  <tr className="bg-slate-100">
-                    <td
-                      colSpan={3 + columns.length}
-                      className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
+                      {saveStatus === "saved" && (
+                        <span className="text-green-600 font-semibold">
+                          ✅ Saved!
+                        </span>
+                      )}
+                      {saveStatus === "idle" && (
+                        <span className="text-green-500 text-xs">
+                          💾 Auto-save ON
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={date}
+                      onChange={(e) => setDate(e.target.value)}
                       style={{ fontSize: "14px" }}
+                      className="border border-slate-300 rounded-lg px-3 py-2 w-32"
+                    />
+                    <select
+                      value={selectedDay}
+                      onChange={(e) => handleGlobalDayChange(e.target.value)}
+                      style={{ fontSize: "14px" }}
+                      className="border border-slate-300 rounded-lg px-3 py-2 font-semibold text-slate-700"
                     >
-                      <div className="flex justify-between">
-                        <span>PRINCIPAL</span>
-                        <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+                      {DAYS.map((d) => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={addColumn}
+                      style={{ fontSize: "14px" }}
+                      className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700"
+                    >
+                      + Add Column
+                    </button>
+                    <button
+                      onClick={handlePrint}
+                      style={{ fontSize: "14px" }}
+                      className="bg-slate-800 text-white px-4 py-2 rounded-lg font-semibold hover:bg-slate-600"
+                    >
+                      🖨️ Print
+                    </button>
+                  </div>
+                </div>
 
-            <div className="mt-4 flex flex-wrap gap-3" style={{ fontSize: "13px", color: "#64748b" }}>
-              <span>✅ Sirf free teachers dikhenge</span>
-              <span>📊 <strong>(3,2)</strong> = 3 free before break, 2 after</span>
-              <span>🖨️ Print = school header + clean table</span>
-            </div>
-          </div>
+                {/* Legend */}
+                <div className="mb-4 flex items-center gap-2 flex-wrap">
+                  <span
+                    style={{ fontSize: "13px" }}
+                    className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full font-medium"
+                  >
+                    💡 <strong>Name (before,after)</strong> = break se pehle aur
+                    baad free lectures
+                  </span>
+                  <span
+                    style={{ fontSize: "13px" }}
+                    className="bg-yellow-50 text-yellow-700 px-3 py-1.5 rounded-full font-medium border border-yellow-200"
+                  >
+                    Break = 5th period ke baad
+                  </span>
+                  <span
+                    style={{ fontSize: "13px" }}
+                    className="bg-green-50 text-green-700 px-3 py-1.5 rounded-full font-medium border border-green-200"
+                  >
+                    💾 Changes auto-save hote hain (2 sec baad)
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table
+                    className="w-full border-collapse"
+                    style={{ fontSize: "14px" }}
+                  >
+                    <thead>
+                      <tr className="bg-slate-900 text-white">
+                        <th
+                          colSpan={3}
+                          rowSpan={2}
+                          className="border border-slate-700 px-3 py-3 text-center font-semibold uppercase align-middle"
+                        >
+                          Period / Time
+                        </th>
+                        <th
+                          colSpan={columns.length}
+                          className="border border-slate-700 px-3 py-2 text-center font-bold uppercase"
+                          style={{ fontSize: "16px", letterSpacing: "3px" }}
+                        >
+                          TEACHERS ON LEAVE
+                        </th>
+                      </tr>
+                      <tr className="bg-slate-800 text-white">
+                        {columns.map((col) => (
+                          <th
+                            key={col.id}
+                            className="border border-slate-700 px-3 py-2 min-w-[220px]"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="text-left">
+                                <div
+                                  style={{ fontSize: "14px" }}
+                                  className="font-bold"
+                                >
+                                  {col.selectedTeacher || "— Select Teacher —"}
+                                </div>
+                                {col.selectedTeacher && (
+                                  <div
+                                    style={{
+                                      fontSize: "11px",
+                                      color: "#93c5fd",
+                                    }}
+                                  >
+                                    {selectedDay}
+                                  </div>
+                                )}
+                              </div>
+                              {columns.length > 1 && (
+                                <button
+                                  onClick={() => removeColumn(col.id)}
+                                  className="text-red-300 hover:text-white ml-2 flex-shrink-0"
+                                  style={{ fontSize: "18px" }}
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                      <tr className="bg-blue-50">
+                        <td
+                          colSpan={3}
+                          className="border border-slate-300 px-3 py-2 font-bold text-slate-700 text-center"
+                          style={{ fontSize: "14px" }}
+                        >
+                          Absent Teacher
+                        </td>
+                        {columns.map((col) => (
+                          <td
+                            key={col.id}
+                            className="border border-slate-300 px-2 py-2"
+                          >
+                            <select
+                              value={col.selectedTeacher}
+                              onChange={(e) =>
+                                handleTeacherSelect(col.id, e.target.value)
+                              }
+                              style={{ fontSize: "14px" }}
+                              className="w-full border-2 border-blue-400 rounded-lg px-2 py-2 bg-white text-blue-900 font-bold"
+                            >
+                              <option value="">
+                                -- Select Absent Teacher --
+                              </option>
+                              {teachers.map((t) => (
+                                <option key={t.name} value={t.name}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        ))}
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {PERIODS.map((period, pIdx) => (
+                        <React.Fragment key={pIdx}>
+                          {/* CLASS ROW */}
+                          <tr>
+                            <td
+                              rowSpan={3}
+                              className="border border-slate-300 text-center bg-slate-900 text-white font-bold px-1 py-2"
+                              style={{ width: "50px" }}
+                            >
+                              <div
+                                style={{ fontSize: "15px" }}
+                                className="font-extrabold"
+                              >
+                                {period.label}
+                              </div>
+                            </td>
+                            <td
+                              rowSpan={3}
+                              className="border border-slate-300 text-center bg-slate-800 text-slate-300 px-1 py-2"
+                              style={{ width: "70px", fontSize: "11px" }}
+                            >
+                              {period.time}
+                            </td>
+                            <td
+                              className="border border-slate-300 px-2 py-2 font-bold text-amber-800 uppercase bg-amber-50 whitespace-nowrap"
+                              style={{ fontSize: "13px", width: "70px" }}
+                            >
+                              📚 Class
+                            </td>
+                            {columns.map((col) => {
+                              const classVal = col.classValues[pIdx] ?? "";
+                              const isFree =
+                                col.selectedTeacher &&
+                                (classVal.trim() === "" ||
+                                  classVal.trim().toLowerCase() === "free");
+                              return (
+                                <td
+                                  key={col.id}
+                                  className="border border-slate-300 px-2 py-1"
+                                >
+                                  {isFree ? (
+                                    <div
+                                      className="w-full text-center font-bold px-2 py-2 rounded-md bg-slate-100 text-slate-400 border-2 border-dashed border-slate-300"
+                                      style={{ fontSize: "14px" }}
+                                    >
+                                      Free
+                                    </div>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={classVal}
+                                      onChange={(e) =>
+                                        updateClassValue(
+                                          col.id,
+                                          pIdx,
+                                          e.target.value,
+                                        )
+                                      }
+                                      placeholder={
+                                        col.selectedTeacher ? "" : "—"
+                                      }
+                                      style={{ fontSize: "15px" }}
+                                      className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
+                                    />
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+
+                          {/* SUB ROW */}
+                          <tr>
+                            <td
+                              className="border border-slate-300 px-2 py-2 font-bold text-green-800 uppercase bg-green-50 whitespace-nowrap"
+                              style={{ fontSize: "13px" }}
+                            >
+                              👤 Sub.
+                            </td>
+                            {columns.map((col) => {
+                              const classVal = col.classValues[pIdx] ?? "";
+                              const isFree = col.selectedTeacher
+                                ? classVal.trim() === "" ||
+                                  classVal.trim().toLowerCase() === "free"
+                                : true;
+                              const avail = getAvailableSubstitutes(
+                                teachers,
+                                columns,
+                                col.id,
+                                pIdx,
+                                selectedDay,
+                              );
+                              const cur = col.substituteTeacher[pIdx] || "";
+                              const isValid =
+                                cur && avail.some((t) => t.name === cur);
+                              return (
+                                <td
+                                  key={col.id}
+                                  className="border border-slate-300 px-2 py-1"
+                                >
+                                  {isFree || !col.selectedTeacher ? (
+                                    <div
+                                      className="w-full text-center text-slate-300 italic py-2"
+                                      style={{ fontSize: "13px" }}
+                                    >
+                                      — Free —
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <select
+                                        value={cur}
+                                        onChange={(e) =>
+                                          updateSubstitute(
+                                            col.id,
+                                            pIdx,
+                                            e.target.value,
+                                          )
+                                        }
+                                        style={{ fontSize: "13px" }}
+                                        className={`w-full border rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-green-400 ${cur ? "border-green-400 bg-green-50 text-green-800 font-semibold" : "border-slate-300"}`}
+                                      >
+                                        <option value="">
+                                          {avail.length === 0
+                                            ? "⚠️ No free teacher"
+                                            : `-- Select Sub (${avail.length} free) --`}
+                                        </option>
+                                        {cur && !isValid && (
+                                          <option
+                                            value={cur}
+                                            style={{ color: "orange" }}
+                                          >
+                                            ⚠️ {cur} (now busy)
+                                          </option>
+                                        )}
+                                        {avail.map((t) => (
+                                          <option key={t.name} value={t.name}>
+                                            {t.name} ({t.freeBefore},
+                                            {t.freeAfter})
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <div className="mt-1 flex justify-between px-1">
+                                        {avail.length === 0 ? (
+                                          <span
+                                            style={{ fontSize: "12px" }}
+                                            className="text-red-500 font-semibold"
+                                          >
+                                            ⚠️ Koi free nahi!
+                                          </span>
+                                        ) : (
+                                          <span
+                                            style={{ fontSize: "12px" }}
+                                            className="text-green-600"
+                                          >
+                                            {avail.length} available
+                                          </span>
+                                        )}
+                                        <span
+                                          style={{ fontSize: "11px" }}
+                                          className="text-slate-400"
+                                        >
+                                          (before,after)
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+
+                          {/* SIGN ROW */}
+                          <tr>
+                            <td
+                              className="border border-slate-300 px-2 py-2 font-bold text-purple-800 uppercase bg-purple-50 whitespace-nowrap"
+                              style={{ fontSize: "13px" }}
+                            >
+                              ✍️ Sign
+                            </td>
+                            {columns.map((col) => {
+                              const cv = col.classValues[pIdx] ?? "";
+                              const isFree =
+                                cv.trim() === "" ||
+                                cv.trim().toLowerCase() === "free";
+                              return (
+                                <td
+                                  key={col.id}
+                                  className={`border border-slate-300 px-2 py-6 ${isFree ? "bg-slate-50" : ""}`}
+                                />
+                              );
+                            })}
+                          </tr>
+
+                          {pIdx === BREAK_AFTER_IDX && (
+                            <tr>
+                              <td
+                                colSpan={3 + columns.length}
+                                className="border border-yellow-400 text-center font-bold py-2"
+                                style={{
+                                  background: "#fef9c3",
+                                  color: "#854d0e",
+                                  fontSize: "13px",
+                                }}
+                              >
+                                ━━━ MAJOR BREAK (12:05 – 12:25) ━━━
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+
+                    <tfoot>
+                      <tr className="bg-slate-100">
+                        <td
+                          colSpan={3 + columns.length}
+                          className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
+                          style={{ fontSize: "14px" }}
+                        >
+                          <div className="flex justify-between">
+                            <span>PRINCIPAL</span>
+                            <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
+                          </div>
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                <div
+                  className="mt-4 flex flex-wrap gap-3"
+                  style={{ fontSize: "13px", color: "#64748b" }}
+                >
+                  <span>✅ Sirf free teachers dikhenge</span>
+                  <span>
+                    📊 <strong>(3,2)</strong> = 3 free before break, 2 after
+                  </span>
+                  <span>🖨️ Print = school header + clean table</span>
+                  <span className="text-green-600 font-semibold">
+                    💾 Sab data auto-save ho raha hai
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* RECORDS PAGE */}
+        {currentPage === "records" && (
+          <RecordsPage
+            records={records}
+            onDelete={handleDeleteRecord}
+            onLoad={handleLoadRecord}
+            onPrint={handlePrintRecord}
+          />
         )}
       </div>
+
+      <div id="print-area" style={{ display: "none" }}></div>
+    </div>
+  );
+}
+
+// ── RECORDS PAGE COMPONENT (UPGRADED WITH DATE & LEADERBOARD) ─────────────────
+function RecordsPage({
+  records,
+  onDelete,
+  onLoad,
+  onPrint,
+}: {
+  records: AdjustmentRecord[];
+  onDelete: (id: string) => void;
+  onLoad: (record: AdjustmentRecord) => void;
+  onPrint: (record: AdjustmentRecord) => void;
+}) {
+  const [filterView, setFilterView] = useState<
+    "all" | "day" | "week" | "month"
+  >("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<"list" | "stats">("list");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // 1. Filter Logic
+  const filteredRecords = useMemo(() => {
+    return records.filter((record) => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        if (
+          !record.date.toLowerCase().includes(q) &&
+          !record.day.toLowerCase().includes(q) &&
+          !record.columns.some((c) =>
+            c.selectedTeacher.toLowerCase().includes(q),
+          )
+        )
+          return false;
+      }
+      if (filterView === "day") {
+        const today = new Date().toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        });
+        return record.date === today;
+      }
+      if (filterView === "week")
+        return record.timestamp >= Date.now() - 7 * 24 * 60 * 60 * 1000;
+      if (filterView === "month")
+        return record.timestamp >= Date.now() - 30 * 24 * 60 * 60 * 1000;
+      return true;
+    });
+  }, [records, filterView, searchQuery]);
+
+  // 2. Stats Calculation for Top Header
+  const totalTeachersAbsent = filteredRecords.reduce(
+    (sum, r) => sum + r.totalTeachers,
+    0,
+  );
+  const totalSubstitutions = filteredRecords.reduce(
+    (sum, r) => sum + r.totalSubstitutes,
+    0,
+  );
+
+  // 3. Detailed Stats for "Leaderboard"
+  const substituteStats = useMemo(() => {
+    const counts: Record<string, number> = {};
+    filteredRecords.forEach((record) => {
+      record.columns.forEach((col) => {
+        col.substituteTeacher.forEach((sub) => {
+          if (sub && sub.trim() !== "") {
+            counts[sub] = (counts[sub] || 0) + 1;
+          }
+        });
+      });
+    });
+    return Object.entries(counts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [filteredRecords]);
+
+  return (
+    <div className="space-y-4">
+      {/* Stats Header */}
+      <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-xl shadow-lg p-6 text-white">
+        <h1 className="text-2xl font-bold mb-4">
+          📋 Adjustment Records & Analytics
+        </h1>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white/20 rounded-lg p-4 backdrop-blur">
+            <div className="text-3xl font-bold">{filteredRecords.length}</div>
+            <div className="text-sm opacity-90">Filtered Records</div>
+          </div>
+          <div className="bg-white/20 rounded-lg p-4 backdrop-blur">
+            <div className="text-3xl font-bold">{totalTeachersAbsent}</div>
+            <div className="text-sm opacity-90">Teachers Absent</div>
+          </div>
+          <div className="bg-white/20 rounded-lg p-4 backdrop-blur">
+            <div className="text-3xl font-bold">{totalSubstitutions}</div>
+            <div className="text-sm opacity-90">Total Adjustments Made</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Filters + Search */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+        <div className="flex flex-wrap gap-3 items-center justify-between">
+          <div className="flex gap-2 flex-wrap">
+            {(["all", "day", "week", "month"] as const).map((v) => {
+              const labels = {
+                all: "📅 All Time",
+                day: "📆 Today",
+                week: "📊 This Week",
+                month: "📈 This Month",
+              };
+              const colors = {
+                all: "bg-blue-600",
+                day: "bg-green-600",
+                week: "bg-orange-600",
+                month: "bg-purple-600",
+              };
+              return (
+                <button
+                  key={v}
+                  onClick={() => setFilterView(v)}
+                  className={`px-4 py-2 rounded-lg font-semibold text-sm transition ${filterView === v ? `${colors[v]} text-white` : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}
+                >
+                  {labels[v]}
+                </button>
+              );
+            })}
+          </div>
+          <input
+            type="text"
+            placeholder="🔍 Search date, teacher..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 min-w-[250px] border-2 border-slate-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+      </div>
+
+      {/* Inner Tabs for View Switch */}
+      <div className="flex gap-2 mb-2">
+        <button
+          onClick={() => setActiveTab("list")}
+          className={`px-5 py-2 font-bold rounded-t-lg transition ${activeTab === "list" ? "bg-white text-blue-700 shadow-sm" : "bg-slate-200 text-slate-500 hover:bg-slate-300"}`}
+        >
+          📜 Record Details
+        </button>
+        <button
+          onClick={() => setActiveTab("stats")}
+          className={`px-5 py-2 font-bold rounded-t-lg transition ${activeTab === "stats" ? "bg-white text-blue-700 shadow-sm" : "bg-slate-200 text-slate-500 hover:bg-slate-300"}`}
+        >
+          🏆 Teacher Analytics (Leaderboard)
+        </button>
+      </div>
+
+      {/* ── TAB 1: RECORD LIST WITH DETAILED TABLE ── */}
+      {activeTab === "list" && (
+        <>
+          {filteredRecords.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center">
+              <div className="text-6xl mb-4">📭</div>
+              <h3 className="text-xl font-bold text-slate-700 mb-2">
+                No Records Found
+              </h3>
+              <p className="text-slate-500">
+                Adjustment form pe jake update karein, ya filter change karein.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {filteredRecords.map((record) => (
+                <div
+                  key={record.id}
+                  className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 transition hover:shadow-md"
+                >
+                  {/* Top Bar Summary */}
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <span className="text-2xl">📋</span>
+                        <div>
+                          <h3 className="font-bold text-lg text-slate-900">
+                            {record.date} — {record.day}
+                          </h3>
+                          <p className="text-sm text-slate-500">
+                            Saved on{" "}
+                            {new Date(record.timestamp).toLocaleString("en-IN")}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-sm">
+                        <span className="bg-red-50 text-red-700 px-3 py-1 rounded-full font-semibold border border-red-200">
+                          👤 {record.totalTeachers} Absent
+                        </span>
+                        <span className="bg-green-50 text-green-700 px-3 py-1 rounded-full font-semibold border border-green-200">
+                          ✅ {record.totalSubstitutes} Adjusted
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={() =>
+                          setExpandedId(
+                            expandedId === record.id ? null : record.id,
+                          )
+                        }
+                        className="bg-purple-100 text-purple-700 border border-purple-300 px-4 py-2 rounded-lg text-sm font-bold hover:bg-purple-200 transition"
+                      >
+                        {expandedId === record.id
+                          ? "🔼 Hide Details"
+                          : "🔽 View Details"}
+                      </button>
+                      <button
+                        onClick={() => onLoad(record)}
+                        className="bg-blue-600  text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700  transition"
+                      >
+                        📥 Load
+                      </button>
+                      <button
+                        onClick={() => onPrint(record)}
+                        className="bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-600 transition"
+                      >
+                        🖨️ Print
+                      </button>
+                      <button
+                        onClick={() => onDelete(record.id)}
+                        className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-700 transition"
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 🆕 DETAILED EXPANDED TABLE WITH DATE */}
+                  {expandedId === record.id && (
+                    <div className="mt-5 border-t-2 border-slate-100 pt-4">
+                      <h4 className="font-bold text-slate-800 mb-3 text-sm uppercase tracking-wide">
+                        Detailed Adjustments
+                      </h4>
+
+                      <div className="overflow-x-auto rounded-lg border border-slate-200">
+                        <table className="w-full text-left text-sm border-collapse bg-white">
+                          <thead className="bg-slate-800 text-white">
+                            <tr>
+                              <th className="p-3 border border-slate-700 w-[15%]">
+                                📅 Date & Day
+                              </th>
+                              <th className="p-3 border border-slate-700 w-[20%]">
+                                👤 Absent Teacher
+                              </th>
+                              <th className="p-3 border border-slate-700 w-[20%]">
+                                ⏰ Period / Time
+                              </th>
+                              <th className="p-3 border border-slate-700 w-[15%]">
+                                📚 Class
+                              </th>
+                              <th className="p-3 border border-slate-700">
+                                ✅ Substituted By
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {record.columns.filter((c) => c.selectedTeacher)
+                              .length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={5}
+                                  className="p-4 text-center text-slate-500 italic"
+                                >
+                                  No absent teachers selected for this day.
+                                </td>
+                              </tr>
+                            ) : (
+                              record.columns
+                                .filter((c) => c.selectedTeacher)
+                                .map((col) => {
+                                  const rowsForTeacher = PERIODS.map(
+                                    (period, pIdx) => {
+                                      const cv = col.classValues[pIdx];
+                                      const sub = col.substituteTeacher[pIdx];
+                                      const isFree =
+                                        !cv ||
+                                        cv.trim() === "" ||
+                                        cv.trim().toLowerCase() === "free";
+
+                                      if (isFree) return null;
+
+                                      return (
+                                        <tr
+                                          key={`${col.id}-${pIdx}`}
+                                          className="hover:bg-slate-50"
+                                        >
+                                          <td className="p-3 border border-slate-200">
+                                            <div className="font-bold text-slate-800">
+                                              {record.date}
+                                            </div>
+                                            <div className="text-xs text-slate-500">
+                                              {record.day}
+                                            </div>
+                                          </td>
+
+                                          <td className="p-3 border border-slate-200 font-bold text-red-700">
+                                            {col.selectedTeacher}
+                                          </td>
+                                          <td className="p-3 border border-slate-200 text-slate-600">
+                                            <strong>{period.label}</strong>{" "}
+                                            <br />
+                                            <span className="text-xs">
+                                              {period.time}
+                                            </span>
+                                          </td>
+                                          <td className="p-3 border border-slate-200 font-semibold text-blue-900 bg-blue-50">
+                                            {cv}
+                                          </td>
+                                          <td className="p-3 border border-slate-200">
+                                            {sub ? (
+                                              <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-bold border border-green-300 inline-block">
+                                                {sub}
+                                              </span>
+                                            ) : (
+                                              <span className="text-orange-500 italic font-semibold">
+                                                ⚠️ Pending / No Sub
+                                              </span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    },
+                                  ).filter(Boolean);
+
+                                  if (rowsForTeacher.length === 0) {
+                                    return (
+                                      <tr key={`empty-${col.id}`}>
+                                        <td className="p-3 border border-slate-200">
+                                          <div className="font-bold text-slate-800">
+                                            {record.date}
+                                          </div>
+                                          <div className="text-xs text-slate-500">
+                                            {record.day}
+                                          </div>
+                                        </td>
+                                        <td className="p-3 border border-slate-200 font-bold text-red-700">
+                                          {col.selectedTeacher}
+                                        </td>
+                                        <td
+                                          colSpan={3}
+                                          className="p-3 border border-slate-200 text-slate-500 italic text-center"
+                                        >
+                                          No assigned classes today (All free)
+                                        </td>
+                                      </tr>
+                                    );
+                                  }
+
+                                  return rowsForTeacher;
+                                })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── TAB 2: TEACHER ANALYTICS / LEADERBOARD ── */}
+      {activeTab === "stats" && (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+          <div className="flex items-center justify-between mb-6 border-b pb-4">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800">
+                🏆 Substitute Teachers Leaderboard
+              </h2>
+              <p className="text-slate-500 text-sm">
+                Based on currently selected filter:{" "}
+                <strong className="text-blue-600 uppercase">
+                  {filterView}
+                </strong>
+              </p>
+            </div>
+            <div className="bg-blue-50 text-blue-800 px-4 py-2 rounded-lg font-bold border border-blue-200">
+              Total Adjusted Classes: {totalSubstitutions}
+            </div>
+          </div>
+
+          {substituteStats.length === 0 ? (
+            <div className="text-center py-10 text-slate-500 italic">
+              No adjustments recorded for this period.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm border-collapse rounded-lg overflow-hidden border border-slate-200">
+                <thead className="bg-slate-100 text-slate-700">
+                  <tr>
+                    <th className="p-4 border-b border-slate-200 font-bold w-16 text-center">
+                      Rank
+                    </th>
+                    <th className="p-4 border-b border-slate-200 font-bold">
+                      Teacher Name
+                    </th>
+                    <th className="p-4 border-b border-slate-200 font-bold w-1/4 text-center">
+                      Adjustments Taken
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {substituteStats.map((stat, idx) => {
+                    let rankBadge = (
+                      <span className="font-bold text-slate-500">
+                        #{idx + 1}
+                      </span>
+                    );
+                    let rowBg = "bg-white";
+
+                    if (idx === 0) {
+                      rankBadge = <span className="text-2xl">🥇</span>;
+                      rowBg = "bg-yellow-50";
+                    } else if (idx === 1) {
+                      rankBadge = <span className="text-2xl">🥈</span>;
+                      rowBg = "bg-slate-50";
+                    } else if (idx === 2) {
+                      rankBadge = <span className="text-2xl">🥉</span>;
+                      rowBg = "bg-orange-50";
+                    }
+
+                    return (
+                      <tr
+                        key={stat.name}
+                        className={`border-b border-slate-100 hover:bg-blue-50 transition ${rowBg}`}
+                      >
+                        <td className="p-4 text-center">{rankBadge}</td>
+                        <td className="p-4 font-bold text-slate-800 text-lg">
+                          {stat.name}
+                        </td>
+                        <td className="p-4 text-center">
+                          <span className="bg-blue-100 text-blue-800 font-black px-4 py-1.5 rounded-full border border-blue-300">
+                            {stat.count} Classes
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

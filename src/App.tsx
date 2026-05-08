@@ -5,6 +5,9 @@ import React, {
   useCallback,
   useMemo,
 } from "react";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+import defaultSchoolLogo from "./GITA_NIKETAN_AWASIYA_VIDYALAYA-logo.png";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const AUTO_SAVE_DELAY = 2000;
@@ -17,26 +20,30 @@ const DAYS = [
   "Friday",
   "Saturday",
 ];
-const PERIODS = [
-  { label: "1st", time: "8:40-9:20" },
-  { label: "2nd", time: "9:20-10:00" },
-  { label: "3rd", time: "10:00-10:40" },
-  { label: "4th", time: "10:50-11:30" },
-  { label: "5th", time: "11:30-12:05" },
-  { label: "6th", time: "12:25-1:05" },
-  { label: "7th", time: "1:05-1:40" },
-  { label: "8th", time: "1:40-2:15" },
-  { label: "Diary", time: "Diary" },
-];
+const DEFAULT_TIMINGS = {
+  periods: [
+    { label: "Period 1", start: "08:40", end: "09:20" },
+    { label: "Period 2", start: "09:20", end: "10:00" },
+    { label: "Period 3", start: "10:00", end: "10:40" },
+    { label: "Period 4", start: "10:50", end: "11:30" },
+    { label: "Period 5", start: "11:30", end: "12:05" },
+    { label: "Period 6", start: "12:25", end: "13:05" },
+    { label: "Period 7", start: "13:05", end: "13:40" },
+    { label: "Period 8", start: "13:40", end: "14:15" },
+    { label: "Period 9", start: "14:15", end: "14:25" },
+  ],
+  majorBreak: { start: "12:05", end: "12:25" }
+};
 
 // ── localStorage KEYS ─────────────────────────────────────────────────────────
-const LS_SCHOOL_KEY = "tas_school_info";
+const LS_SCHOOL_KEY = "tas_school_info_v3";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
 const LS_COLUMNS_KEY = "tas_columns_data";
 const LS_DATE_KEY = "tas_selected_date";
 const LS_DAY_KEY = "tas_selected_day";
 const LS_RECORDS_KEY = "tas_adjustment_records";
+const LS_TIMINGS_KEY = "tas_timings_data";
 
 const DEFAULT_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1jsvywGYMQ_dYZb1cpFGsREMA575hbzkDoa2F0R9VkFw/edit?usp=sharing";
@@ -73,6 +80,25 @@ interface AdjustmentRecord {
   totalSubstitutes: number;
 }
 
+interface PeriodTiming {
+  label: string;
+  start: string;
+  end: string;
+}
+
+interface TimingData {
+  periods: PeriodTiming[];
+  majorBreak: { start: string; end: string };
+}
+
+function loadTimings(): TimingData {
+  try {
+    const saved = localStorage.getItem(LS_TIMINGS_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch {}
+  return DEFAULT_TIMINGS;
+}
+
 // ── localStorage HELPERS ──────────────────────────────────────────────────────
 function saveSchoolInfo(info: SchoolInfo) {
   const { logoUrl, ...rest } = info;
@@ -82,16 +108,16 @@ function saveSchoolInfo(info: SchoolInfo) {
 
 function loadSchoolInfo(): SchoolInfo {
   const defaults: SchoolInfo = {
-    name1: "GITA NIKETAN",
-    name2: "AWASIYA",
-    type: "VIDYALAYA",
+    name1: "",
+    name2: "GITA NIKETAN AWASIYA VIDYALAYA",
+    type: "",
     address: "Salarpur Road, Kurukshetra (Haryana)",
     phone: "Ph: 01744-270896, 259084",
-    logoUrl: "",
+    logoUrl: defaultSchoolLogo,
   };
   try {
     const saved = localStorage.getItem(LS_SCHOOL_KEY);
-    const logo = localStorage.getItem(LS_LOGO_KEY) || "";
+    const logo = localStorage.getItem(LS_LOGO_KEY) || defaultSchoolLogo;
     if (saved) return { ...defaults, ...JSON.parse(saved), logoUrl: logo };
   } catch {}
   return defaults;
@@ -255,7 +281,7 @@ function extractTeachers(rows: string[][]): Teacher[] {
     }
     i++;
   }
-  return teachers;
+  return teachers.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
 function isPeriodFree(teacher: Teacher, day: string, idx: number) {
@@ -263,12 +289,12 @@ function isPeriodFree(teacher: Teacher, day: string, idx: number) {
   return v === "" || v.toLowerCase() === "free" || v === "—" || v === "-";
 }
 
-function getFreePeriodCounts(teacher: Teacher, day: string) {
+function getFreePeriodCounts(teacher: Teacher, day: string, periodsLength: number) {
   let before = 0,
     after = 0;
   for (let i = 0; i <= BREAK_AFTER_IDX; i++)
     if (isPeriodFree(teacher, day, i)) before++;
-  for (let i = BREAK_AFTER_IDX + 1; i < PERIODS.length; i++)
+  for (let i = BREAK_AFTER_IDX + 1; i < periodsLength - 1; i++)
     if (isPeriodFree(teacher, day, i)) after++;
   return { before, after };
 }
@@ -279,6 +305,7 @@ function getAvailableSubstitutes(
   currentColId: number,
   periodIdx: number,
   day: string,
+  periodsLength: number,
 ) {
   const absent = new Set(columns.map((c) => c.selectedTeacher).filter(Boolean));
   const alreadySub = new Set(
@@ -295,7 +322,7 @@ function getAvailableSubstitutes(
         isPeriodFree(t, day, periodIdx),
     )
     .map((t) => {
-      const { before, after } = getFreePeriodCounts(t, day);
+      const { before, after } = getFreePeriodCounts(t, day, periodsLength);
       return { ...t, freeBefore: before, freeAfter: after };
     });
 }
@@ -306,6 +333,8 @@ function buildPrintHTML(
   date: string,
   selectedDay: string,
   schoolInfo: SchoolInfo,
+  periods: { label: string; time: string }[],
+  majorBreak: { start: string; end: string },
 ) {
   const totalCols = columns.length;
   const teacherW = Math.floor((100 - 9 - 6 - 5) / totalCols);
@@ -318,8 +347,8 @@ function buildPrintHTML(
     <div class="school-header">
       ${logoHTML}
       <div class="school-info">
-        <div class="school-name-main">${schoolInfo.name1} <span>${schoolInfo.name2}</span></div>
-        <div class="school-type">${schoolInfo.type}</div>
+        <div class="school-name-main">${schoolInfo.name1 ? schoolInfo.name1 + ' ' : ''}<span>${schoolInfo.name2}</span></div>
+        ${schoolInfo.type ? `<div class="school-type">${schoolInfo.type}</div>` : ''}
         <div class="school-address">${schoolInfo.address}</div>
         <div class="school-address">${schoolInfo.phone}</div>
       </div>
@@ -348,10 +377,10 @@ function buildPrintHTML(
     </tr>`;
 
   let tbodyHTML = "";
-  PERIODS.forEach((period, pIdx) => {
+  periods.forEach((period, pIdx) => {
     tbodyHTML += `<tr>
-      <td rowspan="3" class="period-cell" style="width:5%;text-align:center;"><span class="p-label">${period.label}</span></td>
-      <td rowspan="3" class="period-cell" style="width:7%;text-align:center;"><span class="p-time">${period.time}</span></td>
+      <td rowspan="3" class="period-cell" style="width:5%;text-align:center;background:#e2e8f0;color:black;"><span class="p-label" style="color:black;">${period.label}</span></td>
+      <td rowspan="3" class="period-cell" style="width:7%;text-align:center;background:#e2e8f0;"><span class="p-time" style="color:#475569;">${period.time}</span></td>
       <td class="row-class" style="width:6%;">📚 Class</td>
       ${columns
         .map((col) => {
@@ -381,7 +410,7 @@ function buildPrintHTML(
       ${columns.map(() => `<td><span class="sign-space"></span></td>`).join("")}
     </tr>`;
     if (pIdx === BREAK_AFTER_IDX) {
-      tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (12:05 – 12:25) ━━━</td></tr>`;
+      tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (${majorBreak.start} – ${majorBreak.end}) ━━━</td></tr>`;
     }
   });
 
@@ -401,12 +430,22 @@ function buildPrintHTML(
 // ══════════════════════════════════════════════════════════════════════════════
 export default function App() {
   const [currentPage, setCurrentPage] = useState<"home" | "records">("home");
+  // ── Teacher column pagination ──────────────────────────────────────────────
+  const TEACHERS_PER_PAGE = 5;
+  const [tablePageIdx, setTablePageIdx] = useState(0);
 
   const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() =>
     loadSchoolInfo(),
   );
   const [showSchoolEdit, setShowSchoolEdit] = useState(false);
   const [showSheetEdit, setShowSheetEdit] = useState(false);
+  const [showTimeEdit, setShowTimeEdit] = useState(false);
+  const [timings, setTimings] = useState<TimingData>(() => loadTimings());
+  const PERIODS = timings.periods.map((p) => ({
+    label: p.label,
+    time: p.start && p.end ? `${p.start}-${p.end}` : p.start || p.end || "—",
+  }));
+
   const [sheetUrl, setSheetUrl] = useState<string>(loadSheetUrl);
   const [sheetUrlDraft, setSheetUrlDraft] = useState<string>(loadSheetUrl);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -439,6 +478,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(LS_DAY_KEY, selectedDay);
   }, [selectedDay]);
+  useEffect(() => {
+    localStorage.setItem(LS_TIMINGS_KEY, JSON.stringify(timings));
+  }, [timings]);
 
   // ── Auto-save records (debounced, same date = overwrite) ───────────────────
   useEffect(() => {
@@ -522,8 +564,8 @@ export default function App() {
   useEffect(() => {
     const pa = document.getElementById("print-area");
     if (!pa || !loaded) return;
-    pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo);
-  }, [columns, date, selectedDay, loaded, schoolInfo]);
+    pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo, PERIODS, timings.majorBreak);
+  }, [columns, date, selectedDay, loaded, schoolInfo, PERIODS, timings.majorBreak]);
 
   // ── Logo handlers ──────────────────────────────────────────────────────────
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -615,6 +657,8 @@ export default function App() {
         record.date,
         record.day,
         schoolInfo,
+        PERIODS,
+        timings.majorBreak
       );
       window.print();
     }
@@ -697,12 +741,100 @@ export default function App() {
     setColumns((prev) => prev.filter((c) => c.id !== colId));
   };
 
-  const handlePrint = () => {
-    const pa = document.getElementById("print-area");
-    if (pa)
-      pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo);
-    window.print();
+  // ── Build a full standalone multi-page HTML document for print/PDF ──────────
+  const buildMultiPagePrintDoc = () => {
+    // Split all columns into chunks of TEACHERS_PER_PAGE
+    const chunks: Column[][] = [];
+    for (let i = 0; i < columns.length; i += TEACHERS_PER_PAGE) {
+      chunks.push(columns.slice(i, i + TEACHERS_PER_PAGE));
+    }
+
+    // Shared CSS for all pages
+    const css = `
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      @page { size: A4 landscape; margin: 5mm 6mm; }
+      html, body { background: white; font-family: Arial, sans-serif; }
+
+      /* Each .print-page fills exactly one A4 landscape sheet */
+      .print-page {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100vh;
+        page-break-after: always;
+        overflow: hidden;
+      }
+      .print-page:last-child { page-break-after: auto; }
+
+      /* School Header */
+      .school-header { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 3px 0; border-bottom: 2px solid #1e293b; margin-bottom: 2px; flex-shrink: 0; }
+      .school-logo { width: 44px; height: 44px; border-radius: 50%; border: 2px solid #1e293b; object-fit: cover; flex-shrink: 0; }
+      .school-logo-placeholder { width: 44px; height: 44px; border-radius: 50%; border: 2px solid #1e293b; display: flex; align-items: center; justify-content: center; font-size: 20px; background: #f1f5f9; flex-shrink: 0; }
+      .school-info { text-align: center; }
+      .school-name-main { font-size: 15px; font-weight: 900; letter-spacing: 0.5px; line-height: 1.1; color: #1e293b; }
+      .school-name-main span { color: #dc2626; }
+      .school-type { font-size: 9px; font-weight: 700; color: #1d4ed8; letter-spacing: 2px; }
+      .school-address { font-size: 8.5px; color: #64748b; line-height: 1.3; }
+
+      /* Title & Date */
+      .reg-title { text-align: center; font-size: 10px; font-weight: 800; letter-spacing: 1px; color: #1e293b; margin: 2px 0 1px; text-transform: uppercase; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 2px 0; flex-shrink: 0; }
+      .date-bar { display: flex; justify-content: space-between; font-size: 9px; color: #334155; margin: 2px 0 3px; padding: 0 2px; flex-shrink: 0; }
+
+      /* Table stretches to fill remaining height */
+      table { width: 100%; border-collapse: collapse; font-size: 8px; border: 1.5px solid #1e293b; table-layout: fixed; flex: 1 1 auto; min-height: 0; }
+      tbody { height: 100%; }
+      tbody tr { height: 1px; }
+      th, td { border: 0.5px solid #94a3b8; padding: 2px 3px; vertical-align: middle; line-height: 1.15; overflow: hidden; }
+      thead th { background: #1e293b !important; color: white !important; padding: 3px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      .period-cell { background: #e2e8f0 !important; color: #1e293b !important; text-align: center; vertical-align: middle; padding: 1px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .p-label { font-size: 8px; font-weight: 800; color: #1e293b; display: block; }
+      .p-time { font-size: 6.5px; color: #475569; display: block; line-height: 1; }
+
+      .row-class { background: #fffbeb !important; font-size: 7px; font-weight: 700; color: #92400e; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .row-sub { background: #f0fdf4 !important; font-size: 7px; font-weight: 700; color: #166534; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .row-sign { background: #faf5ff !important; font-size: 7px; font-weight: 700; color: #6b21a8; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+      .val-free { color: #94a3b8; font-style: italic; font-size: 7px; }
+      .val-class { font-weight: 800; color: #1e3a5f; font-size: 8px; }
+      .val-sub { font-weight: 700; color: #166534; font-size: 7px; }
+      .sign-space { display: block; height: 100%; }
+
+      .break-row td { background: #fef9c3 !important; text-align: center; font-weight: 800; font-size: 7px; color: #854d0e; padding: 1px !important; letter-spacing: 0.5px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .footer-row td { background: #f8fafc !important; font-weight: 700; font-size: 9px; color: #334155; padding: 4px 6px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    `;
+
+    // Build one <div class="print-page"> per chunk
+    const pages = chunks
+      .map((chunk) => `<div class="print-page">${buildPrintHTML(chunk, date, selectedDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`)
+      .join("\n");
+
+    return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"/><style>${css}</style></head>
+<body>${pages}</body>
+</html>`;
   };
+
+  const handlePrint = () => {
+    const win = window.open("", "_blank", "width=1200,height=900");
+    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
+    win.document.write(buildMultiPagePrintDoc());
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 500);
+  };
+
+  const handleDownloadPDF = () => {
+    const win = window.open("", "_blank", "width=1200,height=900");
+    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
+    win.document.write(buildMultiPagePrintDoc());
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 500);
+  };
+
+
 
   // ══════════════════════════════════════════════════════════════════════════
   return (
@@ -756,19 +888,21 @@ export default function App() {
                   lineHeight: 1.1,
                 }}
               >
-                <span className="text-slate-900">{schoolInfo.name1} </span>
+                {schoolInfo.name1 && <span className="text-slate-900">{schoolInfo.name1} </span>}
                 <span className="text-red-600">{schoolInfo.name2}</span>
               </div>
-              <div
-                style={{
-                  fontSize: "15px",
-                  fontWeight: 700,
-                  color: "#1d4ed8",
-                  letterSpacing: "3px",
-                }}
-              >
-                {schoolInfo.type}
-              </div>
+              {schoolInfo.type && (
+                <div
+                  style={{
+                    fontSize: "15px",
+                    fontWeight: 700,
+                    color: "#1d4ed8",
+                    letterSpacing: "3px",
+                  }}
+                >
+                  {schoolInfo.type}
+                </div>
+              )}
               <div style={{ fontSize: "13px", color: "#64748b" }}>
                 {schoolInfo.address}
               </div>
@@ -804,13 +938,23 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
+                    setShowTimeEdit(!showTimeEdit);
+                    setShowSheetEdit(false);
+                    setShowSchoolEdit(false);
+                  }}
+                  className="bg-red-700 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-red-600 transition"
+                >
+                  {showTimeEdit ? "✅ Close Edit" : "⏱️ Edit Period Times"}
+                </button>
+                {/* <button
+                  onClick={() => {
                     setShowSchoolEdit(!showSchoolEdit);
                     setShowSheetEdit(false);
                   }}
                   className="bg-slate-800 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-slate-600 transition"
                 >
                   {showSchoolEdit ? "✅ Close Edit" : "✏️ Edit School Info"}
-                </button>
+                </button> */}
               </div>
               <div className="flex gap-2 justify-end">
                 <button
@@ -928,6 +1072,123 @@ export default function App() {
                 💾 Sab changes automatically save hote hain — page refresh ke
                 baad bhi rahenge
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* Period Times Edit Panel */}
+        {showTimeEdit && (
+          <div className="max-w-screen-xl mx-auto px-6 pb-5">
+            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm max-w-lg">
+              <h3 className="font-bold text-red-800 mb-2 text-xl">
+                Edit Period Times
+              </h3>
+              <p className="text-slate-500 text-sm mb-6">
+                Format: HH:MM (e.g. 08:00). Saved on this device.
+              </p>
+              
+              <div className="flex flex-col gap-3">
+                {timings.periods.slice(0, 5).map((p, idx) => (
+                  <div key={idx} className="flex items-center gap-4">
+                    <span className="w-24 font-bold text-slate-800">{p.label}</span>
+                    <input
+                      type="text"
+                      value={p.start}
+                      onChange={(e) => {
+                        const newPeriods = [...timings.periods];
+                        newPeriods[idx].start = e.target.value;
+                        setTimings({ ...timings, periods: newPeriods });
+                      }}
+                      className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                    />
+                    <span className="text-slate-400">-</span>
+                    <input
+                      type="text"
+                      value={p.end}
+                      onChange={(e) => {
+                        const newPeriods = [...timings.periods];
+                        newPeriods[idx].end = e.target.value;
+                        setTimings({ ...timings, periods: newPeriods });
+                      }}
+                      className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                    />
+                  </div>
+                ))}
+
+                <div className="bg-red-50 border border-red-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
+                  <span className="w-24 font-bold text-red-700">Major Break</span>
+                  <input
+                    type="text"
+                    value={timings.majorBreak.start}
+                    onChange={(e) => setTimings({ ...timings, majorBreak: { ...timings.majorBreak, start: e.target.value } })}
+                    className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400 bg-white"
+                  />
+                  <span className="text-slate-400">-</span>
+                  <input
+                    type="text"
+                    value={timings.majorBreak.end}
+                    onChange={(e) => setTimings({ ...timings, majorBreak: { ...timings.majorBreak, end: e.target.value } })}
+                    className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400 bg-white"
+                  />
+                </div>
+
+                {timings.periods.slice(5).map((p, i) => {
+                  const idx = i + 5;
+                  return (
+                    <div key={idx} className="flex items-center gap-4">
+                      <span className="w-24 font-bold text-slate-800">{p.label}</span>
+                      <input
+                        type="text"
+                        value={p.start}
+                        onChange={(e) => {
+                          const newPeriods = [...timings.periods];
+                          newPeriods[idx].start = e.target.value;
+                          setTimings({ ...timings, periods: newPeriods });
+                        }}
+                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                      />
+                      <span className="text-slate-400">-</span>
+                      <input
+                        type="text"
+                        value={p.end}
+                        onChange={(e) => {
+                          const newPeriods = [...timings.periods];
+                          newPeriods[idx].end = e.target.value;
+                          setTimings({ ...timings, periods: newPeriods });
+                        }}
+                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex justify-between items-center mt-6 pt-4 border-t border-slate-200">
+                <button
+                  onClick={() => {
+                    if (confirm("Are you sure you want to reset to default times?")) {
+                      setTimings(DEFAULT_TIMINGS);
+                    }
+                  }}
+                  className="text-red-700 font-bold hover:underline"
+                >
+                  Reset
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setShowTimeEdit(false)}
+                    className="bg-slate-300 text-slate-700 px-6 py-2 rounded font-bold hover:bg-slate-400 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => setShowTimeEdit(false)}
+                    className="bg-emerald-600 text-white px-8 py-2 rounded font-bold hover:bg-emerald-700 transition"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1079,11 +1340,59 @@ export default function App() {
                     >
                       🖨️ Print
                     </button>
+                    <button
+                      onClick={handleDownloadPDF}
+                      style={{ fontSize: "14px" }}
+                      className="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700"
+                    >
+                      📄 PDF
+                    </button>
                   </div>
                 </div>
 
+                {/* ── Teacher Page Navigation ─────────────────────── */}
+                {(() => {
+                  const totalPages = Math.ceil(columns.length / TEACHERS_PER_PAGE);
+                  if (totalPages <= 1) return null;
+                  return (
+                    <div className="flex items-center justify-between mb-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-blue-800 font-bold text-sm">📄 Page:</span>
+                        {Array.from({ length: totalPages }, (_, i) => (
+                          <button
+                            key={i}
+                            onClick={() => setTablePageIdx(i)}
+                            className={`w-8 h-8 rounded-lg font-bold text-sm transition ${
+                              tablePageIdx === i
+                                ? "bg-blue-600 text-white shadow"
+                                : "bg-white text-blue-600 border border-blue-300 hover:bg-blue-100"
+                            }`}
+                          >
+                            {i + 1}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-blue-600 text-xs font-semibold">
+                          Showing teachers {tablePageIdx * TEACHERS_PER_PAGE + 1}–{Math.min((tablePageIdx + 1) * TEACHERS_PER_PAGE, columns.length)} of {columns.length}
+                        </span>
+                        <button
+                          disabled={tablePageIdx === 0}
+                          onClick={() => setTablePageIdx(p => p - 1)}
+                          className="px-3 py-1 rounded-lg bg-white border border-blue-300 text-blue-700 font-bold text-sm hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >← Prev</button>
+                        <button
+                          disabled={tablePageIdx >= totalPages - 1}
+                          onClick={() => setTablePageIdx(p => p + 1)}
+                          className="px-3 py-1 rounded-lg bg-white border border-blue-300 text-blue-700 font-bold text-sm hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >Next →</button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Legend */}
-                <div className="mb-4 flex items-center gap-2 flex-wrap">
+                {/* <div className="mb-4 flex items-center gap-2 flex-wrap">
                   <span
                     style={{ fontSize: "13px" }}
                     className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full font-medium"
@@ -1103,15 +1412,22 @@ export default function App() {
                   >
                     💾 Changes auto-save hote hain (2 sec baad)
                   </span>
-                </div>
+                </div> */}
 
+                {/* Table with paginated columns */}
+                {(() => {
+                  const visibleColumns = columns.slice(
+                    tablePageIdx * TEACHERS_PER_PAGE,
+                    (tablePageIdx + 1) * TEACHERS_PER_PAGE
+                  );
+                  return (
                 <div className="overflow-x-auto">
                   <table
                     className="w-full border-collapse"
                     style={{ fontSize: "14px" }}
                   >
                     <thead>
-                      <tr className="bg-slate-900 text-white">
+                      <tr className="bg-white text-black">
                         <th
                           colSpan={3}
                           rowSpan={2}
@@ -1120,15 +1436,15 @@ export default function App() {
                           Period / Time
                         </th>
                         <th
-                          colSpan={columns.length}
+                          colSpan={visibleColumns.length}
                           className="border border-slate-700 px-3 py-2 text-center font-bold uppercase"
                           style={{ fontSize: "16px", letterSpacing: "3px" }}
                         >
                           TEACHERS ON LEAVE
                         </th>
                       </tr>
-                      <tr className="bg-slate-800 text-white">
-                        {columns.map((col) => (
+                      <tr className="bg-white text-black">
+                        {visibleColumns.map((col) => (
                           <th
                             key={col.id}
                             className="border border-slate-700 px-3 py-2 min-w-[220px]"
@@ -1145,7 +1461,7 @@ export default function App() {
                                   <div
                                     style={{
                                       fontSize: "11px",
-                                      color: "#93c5fd",
+                                      color: "#64748b",
                                     }}
                                   >
                                     {selectedDay}
@@ -1155,7 +1471,7 @@ export default function App() {
                               {columns.length > 1 && (
                                 <button
                                   onClick={() => removeColumn(col.id)}
-                                  className="text-red-300 hover:text-white ml-2 flex-shrink-0"
+                                  className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
                                   style={{ fontSize: "18px" }}
                                 >
                                   ✕
@@ -1173,7 +1489,7 @@ export default function App() {
                         >
                           Absent Teacher
                         </td>
-                        {columns.map((col) => (
+                        {visibleColumns.map((col) => (
                           <td
                             key={col.id}
                             className="border border-slate-300 px-2 py-2"
@@ -1195,6 +1511,26 @@ export default function App() {
                                 </option>
                               ))}
                             </select>
+                            <select
+                              value={col.selectedTeacher}
+                              onChange={(e) =>
+                                handleTeacherSelect(col.id, e.target.value)
+                              }
+                              style={{ fontSize: "12px", marginTop: "6px" }}
+                              className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-700 focus:outline-none"
+                            >
+                              <option value="">
+                                -- Manual Select (All with load) --
+                              </option>
+                              {teachers.map((t) => {
+                                const { before, after } = getFreePeriodCounts(t, selectedDay, PERIODS.length);
+                                return (
+                                  <option key={t.name} value={t.name}>
+                                    {t.name} ({before},{after})
+                                  </option>
+                                );
+                              })}
+                            </select>
                           </td>
                         ))}
                       </tr>
@@ -1207,7 +1543,7 @@ export default function App() {
                           <tr>
                             <td
                               rowSpan={3}
-                              className="border border-slate-300 text-center bg-slate-900 text-white font-bold px-1 py-2"
+                              className="border border-slate-300 text-center bg-white text-black font-bold px-1 py-2"
                               style={{ width: "50px" }}
                             >
                               <div
@@ -1219,7 +1555,7 @@ export default function App() {
                             </td>
                             <td
                               rowSpan={3}
-                              className="border border-slate-300 text-center bg-slate-800 text-slate-300 px-1 py-2"
+                              className="border border-slate-300 text-center bg-white text-slate-600 px-1 py-2"
                               style={{ width: "70px", fontSize: "11px" }}
                             >
                               {period.time}
@@ -1230,7 +1566,7 @@ export default function App() {
                             >
                               📚 Class
                             </td>
-                            {columns.map((col) => {
+                            {visibleColumns.map((col) => {
                               const classVal = col.classValues[pIdx] ?? "";
                               const isFree =
                                 col.selectedTeacher &&
@@ -1279,7 +1615,7 @@ export default function App() {
                             >
                               👤 Sub.
                             </td>
-                            {columns.map((col) => {
+                            {visibleColumns.map((col) => {
                               const classVal = col.classValues[pIdx] ?? "";
                               const isFree = col.selectedTeacher
                                 ? classVal.trim() === "" ||
@@ -1291,6 +1627,7 @@ export default function App() {
                                 col.id,
                                 pIdx,
                                 selectedDay,
+                                PERIODS.length
                               );
                               const cur = col.substituteTeacher[pIdx] || "";
                               const isValid =
@@ -1341,6 +1678,30 @@ export default function App() {
                                           </option>
                                         ))}
                                       </select>
+                                      <select
+                                        value={cur}
+                                        onChange={(e) =>
+                                          updateSubstitute(
+                                            col.id,
+                                            pIdx,
+                                            e.target.value,
+                                          )
+                                        }
+                                        style={{ fontSize: "11px", marginTop: "4px" }}
+                                        className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-600 focus:outline-none"
+                                      >
+                                        <option value="">
+                                          -- Manual Select (All) --
+                                        </option>
+                                        {teachers.map((t) => {
+                                          const { before, after } = getFreePeriodCounts(t, selectedDay, PERIODS.length);
+                                          return (
+                                            <option key={t.name} value={t.name}>
+                                              {t.name} ({before},{after})
+                                            </option>
+                                          );
+                                        })}
+                                      </select>
                                       <div className="mt-1 flex justify-between px-1">
                                         {avail.length === 0 ? (
                                           <span
@@ -1379,7 +1740,7 @@ export default function App() {
                             >
                               ✍️ Sign
                             </td>
-                            {columns.map((col) => {
+                            {visibleColumns.map((col) => {
                               const cv = col.classValues[pIdx] ?? "";
                               const isFree =
                                 cv.trim() === "" ||
@@ -1396,7 +1757,7 @@ export default function App() {
                           {pIdx === BREAK_AFTER_IDX && (
                             <tr>
                               <td
-                                colSpan={3 + columns.length}
+                                colSpan={3 + visibleColumns.length}
                                 className="border border-yellow-400 text-center font-bold py-2"
                                 style={{
                                   background: "#fef9c3",
@@ -1404,7 +1765,7 @@ export default function App() {
                                   fontSize: "13px",
                                 }}
                               >
-                                ━━━ MAJOR BREAK (12:05 – 12:25) ━━━
+                                ━━━ MAJOR BREAK ({timings.majorBreak.start} – {timings.majorBreak.end}) ━━━
                               </td>
                             </tr>
                           )}
@@ -1415,7 +1776,7 @@ export default function App() {
                     <tfoot>
                       <tr className="bg-slate-100">
                         <td
-                          colSpan={3 + columns.length}
+                          colSpan={3 + visibleColumns.length}
                           className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
                           style={{ fontSize: "14px" }}
                         >
@@ -1428,8 +1789,10 @@ export default function App() {
                     </tfoot>
                   </table>
                 </div>
+                  );
+                })()}
 
-                <div
+                {/* <div
                   className="mt-4 flex flex-wrap gap-3"
                   style={{ fontSize: "13px", color: "#64748b" }}
                 >
@@ -1441,7 +1804,7 @@ export default function App() {
                   <span className="text-green-600 font-semibold">
                     💾 Sab data auto-save ho raha hai
                   </span>
-                </div>
+                </div> */}
               </div>
             )}
           </>
@@ -1454,11 +1817,10 @@ export default function App() {
             onDelete={handleDeleteRecord}
             onLoad={handleLoadRecord}
             onPrint={handlePrintRecord}
+            periods={PERIODS}
           />
         )}
       </div>
-
-      <div id="print-area" style={{ display: "none" }}></div>
     </div>
   );
 }
@@ -1469,11 +1831,13 @@ function RecordsPage({
   onDelete,
   onLoad,
   onPrint,
+  periods,
 }: {
   records: AdjustmentRecord[];
   onDelete: (id: string) => void;
   onLoad: (record: AdjustmentRecord) => void;
   onPrint: (record: AdjustmentRecord) => void;
+  periods: { label: string; time: string }[];
 }) {
   const [filterView, setFilterView] = useState<
     "all" | "day" | "week" | "month"
@@ -1738,7 +2102,7 @@ function RecordsPage({
                               record.columns
                                 .filter((c) => c.selectedTeacher)
                                 .map((col) => {
-                                  const rowsForTeacher = PERIODS.map(
+                                  const rowsForTeacher = periods.map(
                                     (period, pIdx) => {
                                       const cv = col.classValues[pIdx];
                                       const sub = col.substituteTeacher[pIdx];

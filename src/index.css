@@ -42,6 +42,11 @@
 
 /* ── PRINT STYLES ── */
 @media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+  
   /* Hide everything except print-area */
   html,
   body {
@@ -55,12 +60,6 @@
   }
   #print-area {
     display: block !important;
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    z-index: 99999;
-    overflow: visible !important;
   }
 
   @page {

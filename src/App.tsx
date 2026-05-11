@@ -8,6 +8,15 @@ import React, {
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import defaultSchoolLogo from "./GITA_NIKETAN_AWASIYA_VIDYALAYA-logo.png";
+import {
+  isFirebaseConfigured,
+  saveCurrentAdjustment,
+  subscribeToCurrentAdjustment,
+  saveAdjustmentRecord,
+  subscribeToRecords,
+  deleteAdjustmentRecord,
+  type CurrentAdjustment,
+} from "./firebase";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const AUTO_SAVE_DELAY = 2000;
@@ -465,7 +474,16 @@ export default function App() {
   );
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Persist basic states ───────────────────────────────────────────────────
+  // ── Firebase sync state ────────────────────────────────────────────────────
+  const firebaseEnabled = isFirebaseConfigured();
+  const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">(
+    firebaseEnabled ? "syncing" : "local"
+  );
+  // Track whether the incoming Firestore update is from a remote source
+  // (to avoid infinite write loops)
+  const isRemoteUpdate = useRef(false);
+
+  // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
     saveSchoolInfo(schoolInfo);
   }, [schoolInfo]);
@@ -482,15 +500,47 @@ export default function App() {
     localStorage.setItem(LS_TIMINGS_KEY, JSON.stringify(timings));
   }, [timings]);
 
+  // ── Firebase: Subscribe to live current adjustment ─────────────────────────
+  useEffect(() => {
+    if (!firebaseEnabled) return;
+    const unsub = subscribeToCurrentAdjustment((data: CurrentAdjustment | null) => {
+      if (!data) { setSyncStatus("connected"); return; }
+      setSyncStatus("connected");
+      // Apply remote state only if it differs (prevent write loop)
+      isRemoteUpdate.current = true;
+      setColumns(data.columns);
+      setDate(data.date);
+      setSelectedDay(data.day);
+      // Small delay to reset flag after state updates propagate
+      setTimeout(() => { isRemoteUpdate.current = false; }, 100);
+    });
+    return () => { if (unsub) unsub(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseEnabled]);
+
+  // ── Firebase: Subscribe to records ────────────────────────────────────────
+  useEffect(() => {
+    if (!firebaseEnabled) return;
+    const unsub = subscribeToRecords((recs) => {
+      setRecords(recs);
+      // Also keep local copy for offline fallback
+      saveRecords(recs);
+    });
+    return () => { if (unsub) unsub(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebaseEnabled]);
+
   // ── Auto-save records (debounced, same date = overwrite) ───────────────────
   useEffect(() => {
     const hasData = columns.some((col) => col.selectedTeacher.trim() !== "");
     if (!hasData || !loaded) return;
+    // Don't write back to Firestore changes that came FROM Firestore
+    if (isRemoteUpdate.current) return;
 
     setSaveStatus("saving");
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
 
-    autoSaveTimer.current = setTimeout(() => {
+    autoSaveTimer.current = setTimeout(async () => {
       let totalSubs = 0;
       columns.forEach((col) => {
         totalSubs += col.substituteTeacher.filter(
@@ -508,14 +558,29 @@ export default function App() {
         totalSubstitutes: totalSubs,
       };
 
-      setRecords((prev) => {
-        const exists = prev.some((r) => r.id === date);
-        const updated = exists
-          ? prev.map((r) => (r.id === date ? record : r))
-          : [record, ...prev];
-        saveRecords(updated);
-        return updated;
-      });
+      // Save to Firestore (universal) or localStorage (local fallback)
+      if (firebaseEnabled) {
+        setSyncStatus("syncing");
+        const currentData: CurrentAdjustment = {
+          columns: JSON.parse(JSON.stringify(columns)),
+          date,
+          day: selectedDay,
+        };
+        await Promise.all([
+          saveCurrentAdjustment(currentData),
+          saveAdjustmentRecord(record),
+        ]);
+        setSyncStatus("connected");
+      } else {
+        setRecords((prev) => {
+          const exists = prev.some((r) => r.id === date);
+          const updated = exists
+            ? prev.map((r) => (r.id === date ? record : r))
+            : [record, ...prev];
+          saveRecords(updated);
+          return updated;
+        });
+      }
 
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 3000);
@@ -524,7 +589,7 @@ export default function App() {
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [columns, date, selectedDay, loaded]);
+  }, [columns, date, selectedDay, loaded, firebaseEnabled]);
 
   // ── Fetch sheet ────────────────────────────────────────────────────────────
   const fetchSheet = useCallback(async (url: string) => {
@@ -626,13 +691,18 @@ export default function App() {
   };
 
   // ── Records handlers ───────────────────────────────────────────────────────
-  const handleDeleteRecord = (id: string) => {
+  const handleDeleteRecord = async (id: string) => {
     if (!confirm("⚠️ Kya aap is record ko delete karna chahte ho?")) return;
-    setRecords((prev) => {
-      const updated = prev.filter((r) => r.id !== id);
-      saveRecords(updated);
-      return updated;
-    });
+    if (firebaseEnabled) {
+      await deleteAdjustmentRecord(id);
+      // Firestore subscription will update records state automatically
+    } else {
+      setRecords((prev) => {
+        const updated = prev.filter((r) => r.id !== id);
+        saveRecords(updated);
+        return updated;
+      });
+    }
   };
 
   const handleLoadRecord = (record: AdjustmentRecord) => {
@@ -922,6 +992,33 @@ export default function App() {
             </div>
             <div style={{ fontSize: "13px", color: "#64748b" }}>
               Academic Year 2026-27
+            </div>
+            {/* ── Sync Status Badge ── */}
+            <div className="mt-1 flex justify-end">
+              {syncStatus === "connected" && (
+                <span className="inline-flex items-center gap-1.5 bg-green-50 border border-green-300 text-green-700 text-xs font-bold px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block"></span>
+                  🌐 Live Sync — All Users See This
+                </span>
+              )}
+              {syncStatus === "syncing" && (
+                <span className="inline-flex items-center gap-1.5 bg-yellow-50 border border-yellow-300 text-yellow-700 text-xs font-bold px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 animate-ping inline-block"></span>
+                  ⏳ Syncing...
+                </span>
+              )}
+              {syncStatus === "offline" && (
+                <span className="inline-flex items-center gap-1.5 bg-red-50 border border-red-300 text-red-700 text-xs font-bold px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                  📴 Offline — Saved Locally
+                </span>
+              )}
+              {syncStatus === "local" && (
+                <span className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-300 text-slate-600 text-xs font-semibold px-3 py-1 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-slate-400 inline-block"></span>
+                  💾 Local Only — Setup Firebase for Sync
+                </span>
+              )}
             </div>
 
             <div className="flex flex-col gap-2 mt-2">
@@ -1291,17 +1388,17 @@ export default function App() {
                       </span>
                       {saveStatus === "saving" && (
                         <span className="text-yellow-600 font-semibold animate-pulse">
-                          💾 Saving...
+                          {firebaseEnabled ? "☁️ Syncing..." : "💾 Saving..."}
                         </span>
                       )}
                       {saveStatus === "saved" && (
                         <span className="text-green-600 font-semibold">
-                          ✅ Saved!
+                          {firebaseEnabled ? "🌐 Synced!" : "✅ Saved!"}
                         </span>
                       )}
                       {saveStatus === "idle" && (
                         <span className="text-green-500 text-xs">
-                          💾 Auto-save ON
+                          {firebaseEnabled ? "🌐 Auto-sync ON" : "💾 Auto-save ON"}
                         </span>
                       )}
                     </p>

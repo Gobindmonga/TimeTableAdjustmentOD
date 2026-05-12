@@ -459,7 +459,11 @@ export default function App() {
     if (!firebaseEnabled) return;
     const unsub = subscribeToCurrentAdjustment((data: CurrentAdjustment | null) => {
       setSyncStatus("connected");
-      if (!data) return;
+      if (!data) {
+        console.log("☁️ Firestore 'current' is empty (Starting fresh)");
+        return;
+      }
+      console.log("☁️ Firestore 'current' data received", data);
       // Record the fingerprint of what Firestore just gave us.
       // The auto-save will compare against this to skip redundant writes.
       lastFirestoreSnapshot.current = JSON.stringify({
@@ -479,6 +483,7 @@ export default function App() {
   useEffect(() => {
     if (!firebaseEnabled) return;
     const unsub = subscribeToRecords((recs) => {
+      console.log("📜 Firestore 'records' received", recs.length, "items");
       setRecords(recs);
     });
     return () => { if (unsub) unsub(); };
@@ -540,6 +545,8 @@ export default function App() {
 
           const results = await Promise.all(saveTasks);
           const ok = results.every(r => r === true);
+          if (ok) console.log("✅ Sync successful");
+          else console.warn("⚠️ Sync failed - Check Internet/Firebase Rules");
           setSyncStatus(ok ? "connected" : "offline");
         } else {
           // Local fallback (optional, but keep simple if user wants Firebase only)
@@ -581,6 +588,7 @@ export default function App() {
       }
       setTeachers(extracted);
       setLoaded(true);
+      console.log("📄 Google Sheet data fetched successfully (%d teachers)", extracted.length);
     } catch {
       setError(
         "Sheet load nahi hui. Publicly shared hai? (Anyone with link → Viewer)",

@@ -49,6 +49,7 @@ function getDb(): Firestore | null {
     try {
       app = initializeApp(firebaseConfig);
       db = getFirestore(app);
+      console.log("🔥 Firebase initialized successfully");
     } catch (e) {
       console.error("Firebase init failed:", e);
       return null;

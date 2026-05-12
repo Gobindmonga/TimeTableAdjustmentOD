@@ -346,7 +346,10 @@ function buildPrintHTML(
   majorBreak: { start: string; end: string },
 ) {
   const totalCols = columns.length;
-  const teacherW = Math.floor((100 - 9 - 6 - 5) / totalCols);
+  // Adjusted width calculation: limit width for single/few teachers to prevent covering entire page
+  let teacherW = Math.floor(82 / Math.max(totalCols, 1));
+  if (totalCols === 1) teacherW = 40;
+  else if (totalCols === 2) teacherW = 35;
 
   const logoHTML = schoolInfo.logoUrl
     ? `<img src="${schoolInfo.logoUrl}" class="school-logo" alt="logo"/>`
@@ -370,16 +373,16 @@ function buildPrintHTML(
 
   const theadHTML = `
     <tr>
-      <th colspan="3" rowspan="2" style="width:18%;text-align:center;vertical-align:middle;font-size:8px;letter-spacing:0.5px;">Period / Time</th>
-      <th colspan="${totalCols}" style="text-align:center;font-size:10px;letter-spacing:2px;font-weight:900;background:#1e293b;border-bottom:2px solid #475569!important;">TEACHERS ON LEAVE</th>
+      <th colspan="3" rowspan="2" style="width:18%;text-align:center;vertical-align:middle;font-size:11px;letter-spacing:0.5px;">Period / Time</th>
+      <th colspan="${totalCols}" style="text-align:center;font-size:14px;letter-spacing:2px;font-weight:900;background:#1e293b;border-bottom:2px solid #475569!important;">TEACHERS ON LEAVE</th>
     </tr>
     <tr>
       ${columns
         .map(
           (col) => `
         <th style="width:${teacherW}%;background:#1e3a5f;padding:3px 2px!important;">
-          <div style="font-size:9px;font-weight:800;color:white;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
-          <div style="font-size:7px;font-weight:400;color:#93c5fd;margin-top:1px;">${selectedDay}</div>
+          <div style="font-size:12px;font-weight:800;color:white;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
+          <div style="font-size:9px;font-weight:400;color:#93c5fd;margin-top:1px;">${selectedDay}</div>
         </th>`,
         )
         .join("")}
@@ -479,9 +482,10 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">(
     firebaseEnabled ? "syncing" : "local"
   );
-  // Track whether the incoming Firestore update is from a remote source
-  // (to avoid infinite write loops)
-  const isRemoteUpdate = useRef(false);
+  // Stores the JSON fingerprint of the last data received FROM Firestore.
+  // Used to skip writes when our local state exactly matches the remote state
+  // (preventing the write → onSnapshot → write infinite loop).
+  const lastFirestoreSnapshot = useRef("");
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -504,15 +508,18 @@ export default function App() {
   useEffect(() => {
     if (!firebaseEnabled) return;
     const unsub = subscribeToCurrentAdjustment((data: CurrentAdjustment | null) => {
-      if (!data) { setSyncStatus("connected"); return; }
       setSyncStatus("connected");
-      // Apply remote state only if it differs (prevent write loop)
-      isRemoteUpdate.current = true;
+      if (!data) return;
+      // Record the fingerprint of what Firestore just gave us.
+      // The auto-save will compare against this to skip redundant writes.
+      lastFirestoreSnapshot.current = JSON.stringify({
+        columns: data.columns,
+        date: data.date,
+        day: data.day,
+      });
       setColumns(data.columns);
       setDate(data.date);
       setSelectedDay(data.day);
-      // Small delay to reset flag after state updates propagate
-      setTimeout(() => { isRemoteUpdate.current = false; }, 100);
     });
     return () => { if (unsub) unsub(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -523,67 +530,80 @@ export default function App() {
     if (!firebaseEnabled) return;
     const unsub = subscribeToRecords((recs) => {
       setRecords(recs);
-      // Also keep local copy for offline fallback
       saveRecords(recs);
     });
     return () => { if (unsub) unsub(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [firebaseEnabled]);
 
-  // ── Auto-save records (debounced, same date = overwrite) ───────────────────
+  // ── Auto-save (debounced) ───────────────────────────────────────────────────────
   useEffect(() => {
     const hasData = columns.some((col) => col.selectedTeacher.trim() !== "");
     if (!hasData || !loaded) return;
-    // Don't write back to Firestore changes that came FROM Firestore
-    if (isRemoteUpdate.current) return;
 
-    setSaveStatus("saving");
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
 
     autoSaveTimer.current = setTimeout(async () => {
-      let totalSubs = 0;
-      columns.forEach((col) => {
-        totalSubs += col.substituteTeacher.filter(
-          (s) => s.trim() !== "",
-        ).length;
-      });
+      try {
+        // ── Loop-break: skip write if data is identical to the last Firestore snapshot
+        if (firebaseEnabled) {
+          const currentSnapshot = JSON.stringify({ columns, date, day: selectedDay });
+          if (currentSnapshot === lastFirestoreSnapshot.current) {
+            setSaveStatus("idle");
+            return;
+          }
+        }
 
-      const record: AdjustmentRecord = {
-        id: date,
-        date,
-        day: selectedDay,
-        timestamp: Date.now(),
-        columns: JSON.parse(JSON.stringify(columns)),
-        totalTeachers: columns.filter((c) => c.selectedTeacher).length,
-        totalSubstitutes: totalSubs,
-      };
+        setSaveStatus("saving");
 
-      // Save to Firestore (universal) or localStorage (local fallback)
-      if (firebaseEnabled) {
-        setSyncStatus("syncing");
-        const currentData: CurrentAdjustment = {
-          columns: JSON.parse(JSON.stringify(columns)),
+        let totalSubs = 0;
+        columns.forEach((col) => {
+          totalSubs += col.substituteTeacher.filter((s) => s.trim() !== "").length;
+        });
+
+        const record: AdjustmentRecord = {
+          id: date,
           date,
           day: selectedDay,
+          timestamp: Date.now(),
+          columns: JSON.parse(JSON.stringify(columns)),
+          totalTeachers: columns.filter((c) => c.selectedTeacher).length,
+          totalSubstitutes: totalSubs,
         };
-        await Promise.all([
-          saveCurrentAdjustment(currentData),
-          saveAdjustmentRecord(record),
-        ]);
-        setSyncStatus("connected");
-      } else {
-        setRecords((prev) => {
-          const exists = prev.some((r) => r.id === date);
-          const updated = exists
-            ? prev.map((r) => (r.id === date ? record : r))
-            : [record, ...prev];
-          saveRecords(updated);
-          return updated;
-        });
-      }
 
-      setSaveStatus("saved");
-      setTimeout(() => setSaveStatus("idle"), 3000);
+        if (firebaseEnabled) {
+          setSyncStatus("syncing");
+          const currentData: CurrentAdjustment = {
+            columns: JSON.parse(JSON.stringify(columns)),
+            date,
+            day: selectedDay,
+          };
+          // Optimistically update the snapshot so the returning onSnapshot
+          // doesn't trigger another write cycle.
+          lastFirestoreSnapshot.current = JSON.stringify({ columns, date, day: selectedDay });
+          const [ok] = await Promise.all([
+            saveCurrentAdjustment(currentData),
+            saveAdjustmentRecord(record),
+          ]);
+          setSyncStatus(ok ? "connected" : "offline");
+        } else {
+          setRecords((prev) => {
+            const exists = prev.some((r) => r.id === date);
+            const updated = exists
+              ? prev.map((r) => (r.id === date ? record : r))
+              : [record, ...prev];
+            saveRecords(updated);
+            return updated;
+          });
+        }
+
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus("idle"), 3000);
+      } catch (err) {
+        console.error("Auto-save error:", err);
+        setSaveStatus("idle");
+        setSyncStatus("offline");
+      }
     }, AUTO_SAVE_DELAY);
 
     return () => {
@@ -822,7 +842,7 @@ export default function App() {
     // Shared CSS for all pages
     const css = `
       * { box-sizing: border-box; margin: 0; padding: 0; }
-      @page { size: A4 landscape; margin: 5mm 6mm; }
+      @page { size: A4 portrait; margin: 5mm 6mm; }
       html, body { background: white; font-family: Arial, sans-serif; }
 
       /* Each .print-page fills exactly one A4 landscape sheet */
@@ -841,37 +861,37 @@ export default function App() {
       .school-logo { width: 44px; height: 44px; border-radius: 50%; border: 2px solid #1e293b; object-fit: cover; flex-shrink: 0; }
       .school-logo-placeholder { width: 44px; height: 44px; border-radius: 50%; border: 2px solid #1e293b; display: flex; align-items: center; justify-content: center; font-size: 20px; background: #f1f5f9; flex-shrink: 0; }
       .school-info { text-align: center; }
-      .school-name-main { font-size: 15px; font-weight: 900; letter-spacing: 0.5px; line-height: 1.1; color: #1e293b; }
+      .school-name-main { font-size: 20px; font-weight: 900; letter-spacing: 0.5px; line-height: 1.1; color: #1e293b; }
       .school-name-main span { color: #dc2626; }
-      .school-type { font-size: 9px; font-weight: 700; color: #1d4ed8; letter-spacing: 2px; }
-      .school-address { font-size: 8.5px; color: #64748b; line-height: 1.3; }
+      .school-type { font-size: 12px; font-weight: 700; color: #1d4ed8; letter-spacing: 2px; }
+      .school-address { font-size: 11px; color: #64748b; line-height: 1.3; }
 
       /* Title & Date */
-      .reg-title { text-align: center; font-size: 10px; font-weight: 800; letter-spacing: 1px; color: #1e293b; margin: 2px 0 1px; text-transform: uppercase; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 2px 0; flex-shrink: 0; }
-      .date-bar { display: flex; justify-content: space-between; font-size: 9px; color: #334155; margin: 2px 0 3px; padding: 0 2px; flex-shrink: 0; }
+      .reg-title { text-align: center; font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #1e293b; margin: 2px 0 1px; text-transform: uppercase; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 2px 0; flex-shrink: 0; }
+      .date-bar { display: flex; justify-content: space-between; font-size: 12px; color: #334155; margin: 2px 0 3px; padding: 0 2px; flex-shrink: 0; }
 
       /* Table stretches to fill remaining height */
-      table { width: 100%; border-collapse: collapse; font-size: 8px; border: 1.5px solid #1e293b; table-layout: fixed; flex: 1 1 auto; min-height: 0; }
+      table { width: auto; min-width: 65%; max-width: 100%; border-collapse: collapse; font-size: 12px; border: 1.5px solid #1e293b; table-layout: fixed; flex: 1 1 auto; min-height: 0; }
       tbody { height: 100%; }
       tbody tr { height: 1px; }
       th, td { border: 0.5px solid #94a3b8; padding: 2px 3px; vertical-align: middle; line-height: 1.15; overflow: hidden; }
       thead th { background: #1e293b !important; color: white !important; padding: 3px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
       .period-cell { background: #e2e8f0 !important; color: #1e293b !important; text-align: center; vertical-align: middle; padding: 1px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .p-label { font-size: 8px; font-weight: 800; color: #1e293b; display: block; }
-      .p-time { font-size: 6.5px; color: #475569; display: block; line-height: 1; }
+      .p-label { font-size: 12px; font-weight: 800; color: #1e293b; display: block; }
+      .p-time { font-size: 9px; color: #475569; display: block; line-height: 1; }
 
-      .row-class { background: #fffbeb !important; font-size: 7px; font-weight: 700; color: #92400e; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .row-sub { background: #f0fdf4 !important; font-size: 7px; font-weight: 700; color: #166534; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .row-sign { background: #faf5ff !important; font-size: 7px; font-weight: 700; color: #6b21a8; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .row-class { background: #fffbeb !important; font-size: 10px; font-weight: 700; color: #92400e; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .row-sub { background: #f0fdf4 !important; font-size: 10px; font-weight: 700; color: #166534; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .row-sign { background: #faf5ff !important; font-size: 10px; font-weight: 700; color: #6b21a8; white-space: nowrap; text-align: center; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
-      .val-free { color: #94a3b8; font-style: italic; font-size: 7px; }
-      .val-class { font-weight: 800; color: #1e3a5f; font-size: 8px; }
-      .val-sub { font-weight: 700; color: #166534; font-size: 7px; }
+      .val-free { color: #94a3b8; font-style: italic; font-size: 10px; }
+      .val-class { font-weight: 400; color: #1e3a5f; font-size: 12px; }
+      .val-sub { font-weight: 900; color: #166534; font-size: 12px; }
       .sign-space { display: block; height: 100%; }
 
-      .break-row td { background: #fef9c3 !important; text-align: center; font-weight: 800; font-size: 7px; color: #854d0e; padding: 1px !important; letter-spacing: 0.5px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-      .footer-row td { background: #f8fafc !important; font-weight: 700; font-size: 9px; color: #334155; padding: 4px 6px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .break-row td { background: #fef9c3 !important; text-align: center; font-weight: 800; font-size: 11px; color: #854d0e; padding: 1px !important; letter-spacing: 0.5px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .footer-row td { background: #f8fafc !important; font-weight: 700; font-size: 13px; color: #334155; padding: 4px 6px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     `;
 
     // Build one <div class="print-page"> per chunk
@@ -895,13 +915,176 @@ export default function App() {
     setTimeout(() => { win.print(); }, 500);
   };
 
+  // ── Shared Print Styles ──
+  const printStyles = `
+    .pdf-page { width: 210mm; padding: 10mm; background: white; margin: 0 auto; font-family: Arial, sans-serif; color: black; }
+    .school-header { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 5px 0; border-bottom: 2px solid #1e293b; margin-bottom: 5px; }
+    .school-logo { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #1e293b; object-fit: cover; }
+    .school-logo-placeholder { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #1e293b; display: flex; align-items: center; justify-content: center; font-size: 24px; background: #f1f5f9; }
+    .school-info { text-align: center; }
+    .school-name-main { font-size: 22px; font-weight: 900; color: #1e293b; }
+    .school-name-main span { color: #dc2626; }
+    .school-type { font-size: 13px; font-weight: 700; color: #1d4ed8; letter-spacing: 2px; }
+    .school-address { font-size: 12px; color: #64748b; }
+    .reg-title { text-align: center; font-size: 16px; font-weight: 800; color: #1e293b; margin: 5px 0; text-transform: uppercase; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 3px 0; }
+    .date-bar { display: flex; justify-content: space-between; font-size: 13px; color: #334155; margin-bottom: 5px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; border: 1.5px solid #1e293b; table-layout: fixed; }
+    th, td { border: 0.5px solid #94a3b8; padding: 4px; vertical-align: middle; text-align: center; }
+    thead th { background: #1e293b !important; color: white !important; }
+    .period-cell { background: #e2e8f0 !important; color: #1e293b !important; font-weight: bold; }
+    .row-class { background: #fffbeb !important; font-weight: bold; color: #92400e; }
+    .row-sub { background: #f0fdf4 !important; font-weight: bold; color: #166534; }
+    .val-class { font-weight: 400; color: #1e3a5f; font-size: 13px; }
+    .val-sub { font-weight: 900; color: #166534; font-size: 13px; }
+    .break-row td { background: #fef9c3 !important; font-weight: 800; color: #854d0e; }
+    .footer-row td { background: #f8fafc !important; font-weight: 700; padding: 10px !important; }
+  `;
+
   const handleDownloadPDF = () => {
     const win = window.open("", "_blank", "width=1200,height=900");
     if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
-    win.document.write(buildMultiPagePrintDoc());
+    
+    const docHtml = buildMultiPagePrintDoc();
+    
+    // Add html2pdf CDN and download logic
+    const enhancedHtml = docHtml.replace("</head>", `
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+        <script>
+          async function downloadAsPDF() {
+            const btn = document.querySelector('.no-print');
+            const originalDisplay = btn.style.display;
+            btn.style.display = 'none';
+            
+            // Add a small delay for the UI to update
+            await new Promise(r => setTimeout(r, 100));
+
+            const opt = {
+              margin: [0, 0, 0, 0],
+              filename: 'Adjustment_Report_${date.replace(/\//g, "-")}.pdf',
+              image: { type: 'jpeg', quality: 0.98 },
+              html2canvas: { 
+                scale: 2, 
+                useCORS: true, 
+                letterRendering: true,
+                backgroundColor: '#ffffff'
+              },
+              jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+              pagebreak: { mode: ['css', 'legacy'] }
+            };
+
+            try {
+              await html2pdf().set(opt).from(document.body).save();
+            } catch (err) {
+              console.error(err);
+              alert("Direct download failed. Please use the 'Print / Save as PDF' button instead.");
+            } finally {
+              btn.style.display = originalDisplay;
+            }
+          }
+        </script>
+      </head>
+    `).replace("<body>", `
+      <body>
+        <div class="no-print" style="position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px;">
+          <button onclick="downloadAsPDF()" style="background: #10b981; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+            📥 Download PDF
+          </button>
+          <button onclick="window.print()" style="background: #ef4444; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+            🖨️ Print / Save as PDF
+          </button>
+          <button onclick="window.close()" style="background: #64748b; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer;">
+            Close
+          </button>
+        </div>
+        <style>
+          @media print { .no-print { display: none !important; } }
+        </style>
+    `);
+    
+    win.document.write(enhancedHtml);
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); }, 500);
+  };
+
+  const handlePrintAnalyticReport = (title: string, contentId: string) => {
+    const content = document.getElementById(contentId);
+    if (!content) return;
+
+    const win = window.open("", "_blank", "width=1200,height=900");
+    if (!win) return;
+
+    // Get all style tags and link tags to ensure Tailwind and other styles are copied
+    const styles = Array.from(document.querySelectorAll("style, link[rel='stylesheet']"))
+      .map(s => s.outerHTML)
+      .join("\n");
+
+    const winHtml = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${title}</title>
+          ${styles}
+          <style>
+            @page { size: A4 portrait; margin: 10mm; }
+            body { padding: 0; margin: 0; background: white !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .print-container { padding: 30px; width: 100%; max-width: 210mm; margin: 0 auto; overflow: visible !important; }
+            .no-print { display: flex; justify-content: flex-end; margin-bottom: 20px; }
+            @media print { 
+              .no-print { display: none !important; }
+              body { padding: 0; }
+              .print-container { padding: 0; margin: 0; max-width: 100%; width: 100%; }
+            }
+            #print-content { opacity: 1 !important; visibility: visible !important; }
+            /* Force visibility for Tailwind classes */
+            [class*="hidden"] { display: block !important; }
+            [class*="opacity-0"] { opacity: 1 !important; }
+            
+            table { width: 100% !important; border-collapse: collapse !important; border: 1px solid #cbd5e1 !important; margin-top: 10px; table-layout: auto !important; }
+            th, td { border: 1px solid #cbd5e1 !important; padding: 12px 8px !important; text-align: left; vertical-align: middle; }
+            th { background-color: #f1f5f9 !important; font-weight: bold; }
+            
+            .bg-yellow-50 { background-color: #fefce8 !important; }
+            .bg-slate-50 { background-color: #f8fafc !important; }
+            .bg-orange-50 { background-color: #fff7ed !important; }
+            .bg-blue-100 { background-color: #dbeafe !important; }
+            .bg-blue-600 { background-color: #2563eb !important; }
+            .text-blue-800 { color: #1e40af !important; }
+            .text-slate-800 { color: #1e293b !important; }
+            .text-red-700 { color: #b91c1c !important; }
+          </style>
+        </head>
+        <body>
+          <div class="print-container">
+            <div class="no-print">
+              <button onclick="window.print()" style="background: #2563eb; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                🖨️ Print Report
+              </button>
+            </div>
+            <div id="print-content">
+              <div style="text-align:center; margin-bottom: 30px; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px;">
+                <h1 style="font-size: 26px; color: #1e293b; margin-bottom: 10px;">${title}</h1>
+                <h2 style="font-size: 18px; color: #ef4444; margin: 0;">${schoolInfo.name1} ${schoolInfo.name2}</h2>
+                <p style="color: #64748b; font-size: 13px; margin: 5px 0;">${schoolInfo.address}</p>
+                <p style="color: #64748b; font-size: 12px;">Report Generated: ${new Date().toLocaleString('en-IN')}</p>
+              </div>
+              <div id="main-content-target"></div>
+              <div style="margin-top: 80px; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px;">
+                <div style="border-top: 2px solid #334155; padding-top: 10px; width: 220px; text-align: center;">PRINCIPAL</div>
+                <div style="border-top: 2px solid #334155; padding-top: 10px; width: 220px; text-align: center;">INCHARGE</div>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+    win.document.write(winHtml);
+    const target = win.document.getElementById('main-content-target');
+    if (target) {
+      target.innerHTML = content.innerHTML;
+    }
+    win.document.close();
+    win.focus();
   };
 
 
@@ -1440,9 +1623,9 @@ export default function App() {
                     <button
                       onClick={handleDownloadPDF}
                       style={{ fontSize: "14px" }}
-                      className="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700"
+                      className="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700 flex items-center gap-2"
                     >
-                      📄 PDF
+                      📄 PDF Preview
                     </button>
                   </div>
                 </div>
@@ -1914,10 +2097,12 @@ export default function App() {
             onDelete={handleDeleteRecord}
             onLoad={handleLoadRecord}
             onPrint={handlePrintRecord}
+            onPrintAnalytics={handlePrintAnalyticReport}
             periods={PERIODS}
           />
         )}
       </div>
+      <div id="print-area" style={{ position: "absolute", left: "-9999px", top: "-9999px" }}></div>
     </div>
   );
 }
@@ -1928,12 +2113,14 @@ function RecordsPage({
   onDelete,
   onLoad,
   onPrint,
+  onPrintAnalytics,
   periods,
 }: {
   records: AdjustmentRecord[];
   onDelete: (id: string) => void;
   onLoad: (record: AdjustmentRecord) => void;
   onPrint: (record: AdjustmentRecord) => void;
+  onPrintAnalytics: (title: string, contentId: string) => void;
   periods: { label: string; time: string }[];
 }) {
   const [filterView, setFilterView] = useState<
@@ -2021,6 +2208,14 @@ function RecordsPage({
             <div className="text-sm opacity-90">Total Adjustments Made</div>
           </div>
         </div>
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={() => onPrintAnalytics(`Adjustment Report - ${filterView.toUpperCase()}`, activeTab === "list" ? "analytics-list-content" : "analytics-stats-content")}
+            className="bg-white text-blue-700 px-6 py-2 rounded-lg font-bold hover:bg-blue-50 transition flex items-center gap-2"
+          >
+            🖨️ Print Analytic Report (${filterView.toUpperCase()})
+          </button>
+        </div>
       </div>
 
       {/* Filters + Search */}
@@ -2079,7 +2274,7 @@ function RecordsPage({
 
       {/* ── TAB 1: RECORD LIST WITH DETAILED TABLE ── */}
       {activeTab === "list" && (
-        <>
+        <div id="analytics-list-content">
           {filteredRecords.length === 0 ? (
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-12 text-center">
               <div className="text-6xl mb-4">📭</div>
@@ -2289,12 +2484,12 @@ function RecordsPage({
               ))}
             </div>
           )}
-        </>
+        </div>
       )}
 
       {/* ── TAB 2: TEACHER ANALYTICS / LEADERBOARD ── */}
       {activeTab === "stats" && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <div id="analytics-stats-content" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <div className="flex items-center justify-between mb-6 border-b pb-4">
             <div>
               <h2 className="text-xl font-bold text-slate-800">

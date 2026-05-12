@@ -1081,6 +1081,7 @@ export default function App() {
     win.document.write(winHtml);
     const target = win.document.getElementById('main-content-target');
     if (target) {
+      
       target.innerHTML = content.innerHTML;
     }
     win.document.close();

@@ -48,10 +48,6 @@ const DEFAULT_TIMINGS = {
 const LS_SCHOOL_KEY = "tas_school_info_v3";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
-const LS_COLUMNS_KEY = "tas_columns_data";
-const LS_DATE_KEY = "tas_selected_date";
-const LS_DAY_KEY = "tas_selected_day";
-const LS_RECORDS_KEY = "tas_adjustment_records";
 const LS_TIMINGS_KEY = "tas_timings_data";
 
 const DEFAULT_SHEET_URL =
@@ -134,56 +130,6 @@ function loadSchoolInfo(): SchoolInfo {
 
 function loadSheetUrl(): string {
   return localStorage.getItem(LS_SHEET_URL_KEY) || DEFAULT_SHEET_URL;
-}
-
-function loadColumns(): Column[] {
-  try {
-    const saved = localStorage.getItem(LS_COLUMNS_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {}
-  return [
-    {
-      id: 1,
-      selectedTeacher: "",
-      substituteTeacher: Array(9).fill(""),
-      classValues: Array(9).fill(""),
-    },
-  ];
-}
-
-function loadDate(): string {
-  return (
-    localStorage.getItem(LS_DATE_KEY) ||
-    new Date().toLocaleDateString("en-IN", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    })
-  );
-}
-
-function loadDay(): string {
-  const saved = localStorage.getItem(LS_DAY_KEY);
-  if (saved && DAYS.includes(saved)) return saved;
-  return getTodayDay();
-}
-
-function loadRecords(): AdjustmentRecord[] {
-  try {
-    const saved = localStorage.getItem(LS_RECORDS_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
-}
-
-function saveRecords(records: AdjustmentRecord[]) {
-  localStorage.setItem(LS_RECORDS_KEY, JSON.stringify(records));
 }
 
 // ── UTILITY FUNCTIONS ─────────────────────────────────────────────────────────
@@ -467,11 +413,24 @@ export default function App() {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [loaded, setLoaded] = useState(false);
 
-  const [selectedDay, setSelectedDay] = useState<string>(loadDay);
-  const [date, setDate] = useState<string>(loadDate);
-  const [columns, setColumns] = useState<Column[]>(loadColumns);
+  const [selectedDay, setSelectedDay] = useState<string>(getTodayDay());
+  const [date, setDate] = useState<string>(
+    new Date().toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    })
+  );
+  const [columns, setColumns] = useState<Column[]>([
+    {
+      id: 1,
+      selectedTeacher: "",
+      substituteTeacher: Array(9).fill(""),
+      classValues: Array(9).fill(""),
+    },
+  ]);
 
-  const [records, setRecords] = useState<AdjustmentRecord[]>(loadRecords);
+  const [records, setRecords] = useState<AdjustmentRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
     "idle",
   );
@@ -491,15 +450,6 @@ export default function App() {
   useEffect(() => {
     saveSchoolInfo(schoolInfo);
   }, [schoolInfo]);
-  useEffect(() => {
-    localStorage.setItem(LS_COLUMNS_KEY, JSON.stringify(columns));
-  }, [columns]);
-  useEffect(() => {
-    localStorage.setItem(LS_DATE_KEY, date);
-  }, [date]);
-  useEffect(() => {
-    localStorage.setItem(LS_DAY_KEY, selectedDay);
-  }, [selectedDay]);
   useEffect(() => {
     localStorage.setItem(LS_TIMINGS_KEY, JSON.stringify(timings));
   }, [timings]);
@@ -530,7 +480,6 @@ export default function App() {
     if (!firebaseEnabled) return;
     const unsub = subscribeToRecords((recs) => {
       setRecords(recs);
-      saveRecords(recs);
     });
     return () => { if (unsub) unsub(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -538,8 +487,7 @@ export default function App() {
 
   // ── Auto-save (debounced) ───────────────────────────────────────────────────────
   useEffect(() => {
-    const hasData = columns.some((col) => col.selectedTeacher.trim() !== "");
-    if (!hasData || !loaded) return;
+    if (!loaded) return;
 
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
 
@@ -581,20 +529,21 @@ export default function App() {
           // Optimistically update the snapshot so the returning onSnapshot
           // doesn't trigger another write cycle.
           lastFirestoreSnapshot.current = JSON.stringify({ columns, date, day: selectedDay });
-          const [ok] = await Promise.all([
-            saveCurrentAdjustment(currentData),
-            saveAdjustmentRecord(record),
-          ]);
+          
+          const saveTasks: Promise<any>[] = [saveCurrentAdjustment(currentData)];
+          
+          // Only save to history (records) if there is actual adjustment data
+          const hasTeacherData = columns.some((col) => col.selectedTeacher.trim() !== "");
+          if (hasTeacherData) {
+            saveTasks.push(saveAdjustmentRecord(record));
+          }
+
+          const results = await Promise.all(saveTasks);
+          const ok = results.every(r => r === true);
           setSyncStatus(ok ? "connected" : "offline");
         } else {
-          setRecords((prev) => {
-            const exists = prev.some((r) => r.id === date);
-            const updated = exists
-              ? prev.map((r) => (r.id === date ? record : r))
-              : [record, ...prev];
-            saveRecords(updated);
-            return updated;
-          });
+          // Local fallback (optional, but keep simple if user wants Firebase only)
+          setRecords([]);
         }
 
         setSaveStatus("saved");
@@ -689,9 +638,6 @@ export default function App() {
       )
     )
       return;
-    localStorage.removeItem(LS_COLUMNS_KEY);
-    localStorage.removeItem(LS_DATE_KEY);
-    localStorage.removeItem(LS_DAY_KEY);
     setColumns([
       {
         id: 1,
@@ -715,13 +661,8 @@ export default function App() {
     if (!confirm("⚠️ Kya aap is record ko delete karna chahte ho?")) return;
     if (firebaseEnabled) {
       await deleteAdjustmentRecord(id);
-      // Firestore subscription will update records state automatically
     } else {
-      setRecords((prev) => {
-        const updated = prev.filter((r) => r.id !== id);
-        saveRecords(updated);
-        return updated;
-      });
+      setRecords((prev) => prev.filter((r) => r.id !== id));
     }
   };
 

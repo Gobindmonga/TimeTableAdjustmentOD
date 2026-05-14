@@ -505,7 +505,7 @@ export default function App() {
       console.error("Save error:", err);
       setSaveStatus("idle");
       setSyncStatus("offline");
-      alert("❌ Database me save nahi ho paya. Kya backend chal raha hai?");
+      alert("❌ Failed to save to database. Is the backend running?");
     }
   };
 
@@ -525,7 +525,7 @@ export default function App() {
       const rows = parseCSV(text);
       const extracted = extractTeachers(rows);
       if (extracted.length === 0) {
-        setError("Koi teacher data nahi mila. Sheet publicly shared hai?");
+        setError("No teacher data found. Is the sheet publicly shared?");
         return;
       }
       setTeachers(extracted);
@@ -533,7 +533,7 @@ export default function App() {
       console.log("📄 Google Sheet data fetched successfully (%d teachers)", extracted.length);
     } catch {
       setError(
-        "Sheet load nahi hui. Publicly shared hai? (Anyone with link → Viewer)",
+        "Sheet failed to load. Is it publicly shared? (Anyone with link → Viewer)",
       );
     } finally {
       setLoading(false);
@@ -584,7 +584,7 @@ export default function App() {
   const handleResetData = () => {
     if (
       !confirm(
-        "⚠️ Kya aap adjustment data clear karna chahte ho?\n\n(Teacher selections, date, day)\n\nSchool info aur logo safe rahenge.",
+        "⚠️ Do you want to clear adjustment data?\n\n(Teacher selections, date, day)\n\nSchool info and logo will remain safe.",
       )
     )
       return;
@@ -608,7 +608,7 @@ export default function App() {
 
   // ── Records handlers ───────────────────────────────────────────────────────
   const handleDeleteRecord = async (id: string) => {
-    if (!confirm("⚠️ Kya aap is record ko delete karna chahte ho?")) return;
+    if (!confirm("⚠️ Do you want to delete this record?")) return;
     try {
       const res = await fetch(`http://localhost:5000/api/adjustments/${encodeURIComponent(id)}`, {
         method: 'DELETE',
@@ -629,7 +629,7 @@ export default function App() {
   const handleLoadRecord = (record: AdjustmentRecord) => {
     if (
       !confirm(
-        `📥 Load this record?\n\nDate: ${record.date}\nDay: ${record.day}\n\nCurrent adjustment data replace ho jayega!`,
+        `📥 Load this record?\n\nDate: ${record.date}\nDay: ${record.day}\n\nCurrent adjustment data will be replaced!`,
       )
     )
       return;
@@ -1411,10 +1411,10 @@ export default function App() {
                   className="text-slate-600 font-semibold"
                   style={{ fontSize: "16px" }}
                 >
-                  ⏳ Timetable data load ho raha hai…
+                  ⏳ Timetable data is loading…
                 </p>
                 <p className="text-slate-400 mt-1" style={{ fontSize: "13px" }}>
-                  Google Sheet se data fetch ho raha hai, please wait…
+                  Fetching data from Google Sheet, please wait…
                 </p>
               </div>
             )}
@@ -1574,14 +1574,14 @@ export default function App() {
                     style={{ fontSize: "13px" }}
                     className="bg-slate-100 text-slate-600 px-3 py-1.5 rounded-full font-medium"
                   >
-                    💡 <strong>Name (before,after)</strong> = break se pehle aur
-                    baad free lectures
+                    💡 <strong>Name (before,after)</strong> = free lectures before
+                    and after break
                   </span>
                   <span
                     style={{ fontSize: "13px" }}
                     className="bg-yellow-50 text-yellow-700 px-3 py-1.5 rounded-full font-medium border border-yellow-200"
                   >
-                    Break = 5th period ke baad
+                    Break = After 5th period
                   </span>
                   <span
                     style={{ fontSize: "13px" }}
@@ -1885,7 +1885,7 @@ export default function App() {
                                             style={{ fontSize: "12px" }}
                                             className="text-red-500 font-semibold"
                                           >
-                                            ⚠️ Koi free nahi!
+                                            ⚠️ None free!
                                           </span>
                                         ) : (
                                           <span
@@ -2192,7 +2192,7 @@ function RecordsPage({
                 No Records Found
               </h3>
               <p className="text-slate-500">
-                Adjustment form pe jake update karein, ya filter change karein.
+                Update via the adjustment form, or change the filter.
               </p>
             </div>
           ) : (

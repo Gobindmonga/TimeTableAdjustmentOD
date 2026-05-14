@@ -436,15 +436,8 @@ export default function App() {
   );
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Firebase sync state ────────────────────────────────────────────────────
-  const firebaseEnabled = isFirebaseConfigured();
-  const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">(
-    firebaseEnabled ? "syncing" : "local"
-  );
-  // Stores the JSON fingerprint of the last data received FROM Firestore.
-  // Used to skip writes when our local state exactly matches the remote state
-  // (preventing the write → onSnapshot → write infinite loop).
-  const lastFirestoreSnapshot = useRef("");
+  // ── Database Sync State ────────────────────────────────────────────────────
+  const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">("local");
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -454,118 +447,67 @@ export default function App() {
     localStorage.setItem(LS_TIMINGS_KEY, JSON.stringify(timings));
   }, [timings]);
 
-  // ── Firebase: Subscribe to live current adjustment ─────────────────────────
-  useEffect(() => {
-    if (!firebaseEnabled) return;
-    const unsub = subscribeToCurrentAdjustment((data: CurrentAdjustment | null) => {
-      setSyncStatus("connected");
-      if (!data) {
-        console.log("☁️ Firestore 'current' is empty (Starting fresh)");
-        return;
+  // ── Fetch Records from Database ──────────────────────────────────────────
+  const fetchRecordsFromDB = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/adjustments');
+      const json = await res.json();
+      if (json.success) {
+        setRecords(json.data);
       }
-      console.log("☁️ Firestore 'current' data received", data);
-      // Record the fingerprint of what Firestore just gave us.
-      // The auto-save will compare against this to skip redundant writes.
-      lastFirestoreSnapshot.current = JSON.stringify({
-        columns: data.columns,
-        date: data.date,
-        day: data.day,
+    } catch (err) {
+      console.error("Failed to load records from DB:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchRecordsFromDB();
+  }, []);
+
+  // ── Manual Save to Database ─────────────────────────────────────────────
+  const handleSaveToDatabase = async () => {
+    setSaveStatus("saving");
+    setSyncStatus("syncing");
+
+    try {
+      let totalSubs = 0;
+      columns.forEach((col) => {
+        totalSubs += col.substituteTeacher.filter((s) => s.trim() !== "").length;
       });
-      setColumns(data.columns);
-      setDate(data.date);
-      setSelectedDay(data.day);
-    });
-    return () => { if (unsub) unsub(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseEnabled]);
 
-  // ── Firebase: Subscribe to records ────────────────────────────────────────
-  useEffect(() => {
-    if (!firebaseEnabled) return;
-    const unsub = subscribeToRecords((recs) => {
-      console.log("📜 Firestore 'records' received", recs.length, "items");
-      setRecords(recs);
-    });
-    return () => { if (unsub) unsub(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseEnabled]);
+      const record: AdjustmentRecord = {
+        id: date,
+        date,
+        day: selectedDay,
+        timestamp: Date.now(),
+        columns: JSON.parse(JSON.stringify(columns)),
+        totalTeachers: columns.filter((c) => c.selectedTeacher).length,
+        totalSubstitutes: totalSubs,
+      };
 
-  // ── Auto-save (debounced) ───────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!loaded) return;
+      const res = await fetch('http://localhost:5000/api/adjustments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+      });
 
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-
-    autoSaveTimer.current = setTimeout(async () => {
-      try {
-        // ── Loop-break: skip write if data is identical to the last Firestore snapshot
-        if (firebaseEnabled) {
-          const currentSnapshot = JSON.stringify({ columns, date, day: selectedDay });
-          if (currentSnapshot === lastFirestoreSnapshot.current) {
-            setSaveStatus("idle");
-            return;
-          }
-        }
-
-        setSaveStatus("saving");
-
-        let totalSubs = 0;
-        columns.forEach((col) => {
-          totalSubs += col.substituteTeacher.filter((s) => s.trim() !== "").length;
-        });
-
-        const record: AdjustmentRecord = {
-          id: date,
-          date,
-          day: selectedDay,
-          timestamp: Date.now(),
-          columns: JSON.parse(JSON.stringify(columns)),
-          totalTeachers: columns.filter((c) => c.selectedTeacher).length,
-          totalSubstitutes: totalSubs,
-        };
-
-        if (firebaseEnabled) {
-          setSyncStatus("syncing");
-          const currentData: CurrentAdjustment = {
-            columns: JSON.parse(JSON.stringify(columns)),
-            date,
-            day: selectedDay,
-          };
-          // Optimistically update the snapshot so the returning onSnapshot
-          // doesn't trigger another write cycle.
-          lastFirestoreSnapshot.current = JSON.stringify({ columns, date, day: selectedDay });
-          
-          const saveTasks: Promise<any>[] = [saveCurrentAdjustment(currentData)];
-          
-          // Only save to history (records) if there is actual adjustment data
-          const hasTeacherData = columns.some((col) => col.selectedTeacher.trim() !== "");
-          if (hasTeacherData) {
-            saveTasks.push(saveAdjustmentRecord(record));
-          }
-
-          const results = await Promise.all(saveTasks);
-          const ok = results.every(r => r === true);
-          if (ok) console.log("✅ Sync successful");
-          else console.warn("⚠️ Sync failed - Check Internet/Firebase Rules");
-          setSyncStatus(ok ? "connected" : "offline");
-        } else {
-          // Local fallback (optional, but keep simple if user wants Firebase only)
-          setRecords([]);
-        }
-
+      const json = await res.json();
+      if (json.success) {
         setSaveStatus("saved");
+        setSyncStatus("connected");
+        fetchRecordsFromDB(); // Refresh records
         setTimeout(() => setSaveStatus("idle"), 3000);
-      } catch (err) {
-        console.error("Auto-save error:", err);
-        setSaveStatus("idle");
-        setSyncStatus("offline");
+        alert("✅ Data successfully saved to Database!");
+      } else {
+        throw new Error(json.message);
       }
-    }, AUTO_SAVE_DELAY);
-
-    return () => {
-      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    };
-  }, [columns, date, selectedDay, loaded, firebaseEnabled]);
+    } catch (err) {
+      console.error("Save error:", err);
+      setSaveStatus("idle");
+      setSyncStatus("offline");
+      alert("❌ Database me save nahi ho paya. Kya backend chal raha hai?");
+    }
+  };
 
   // ── Fetch sheet ────────────────────────────────────────────────────────────
   const fetchSheet = useCallback(async (url: string) => {
@@ -667,10 +609,20 @@ export default function App() {
   // ── Records handlers ───────────────────────────────────────────────────────
   const handleDeleteRecord = async (id: string) => {
     if (!confirm("⚠️ Kya aap is record ko delete karna chahte ho?")) return;
-    if (firebaseEnabled) {
-      await deleteAdjustmentRecord(id);
-    } else {
-      setRecords((prev) => prev.filter((r) => r.id !== id));
+    try {
+      const res = await fetch(`http://localhost:5000/api/adjustments/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      const json = await res.json();
+      if (json.success) {
+        setRecords((prev) => prev.filter((r) => r.id !== id));
+        alert("✅ Record deleted!");
+      } else {
+        alert("❌ Failed to delete record.");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("❌ Could not connect to database.");
     }
   };
 
@@ -1130,26 +1082,26 @@ export default function App() {
             <div className="mt-1 flex justify-end">
               {syncStatus === "connected" && (
                 <span className="inline-flex items-center gap-1.5 bg-green-50 border border-green-300 text-green-700 text-xs font-bold px-3 py-1 rounded-full">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse inline-block"></span>
-                  🌐 Live Sync — All Users See This
+                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>
+                  🌐 Connected to Database
                 </span>
               )}
               {syncStatus === "syncing" && (
                 <span className="inline-flex items-center gap-1.5 bg-yellow-50 border border-yellow-300 text-yellow-700 text-xs font-bold px-3 py-1 rounded-full">
                   <span className="w-2 h-2 rounded-full bg-yellow-400 animate-ping inline-block"></span>
-                  ⏳ Syncing...
+                  ⏳ Saving...
                 </span>
               )}
               {syncStatus === "offline" && (
                 <span className="inline-flex items-center gap-1.5 bg-red-50 border border-red-300 text-red-700 text-xs font-bold px-3 py-1 rounded-full">
                   <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
-                  📴 Offline — Saved Locally
+                  📴 Database Offline
                 </span>
               )}
               {syncStatus === "local" && (
                 <span className="inline-flex items-center gap-1.5 bg-slate-100 border border-slate-300 text-slate-600 text-xs font-semibold px-3 py-1 rounded-full">
                   <span className="w-2 h-2 rounded-full bg-slate-400 inline-block"></span>
-                  💾 Local Only — Setup Firebase for Sync
+                  💾 Unsaved Changes
                 </span>
               )}
             </div>
@@ -1521,17 +1473,12 @@ export default function App() {
                       </span>
                       {saveStatus === "saving" && (
                         <span className="text-yellow-600 font-semibold animate-pulse">
-                          {firebaseEnabled ? "☁️ Syncing..." : "💾 Saving..."}
+                          💾 Saving...
                         </span>
                       )}
                       {saveStatus === "saved" && (
                         <span className="text-green-600 font-semibold">
-                          {firebaseEnabled ? "🌐 Synced!" : "✅ Saved!"}
-                        </span>
-                      )}
-                      {saveStatus === "idle" && (
-                        <span className="text-green-500 text-xs">
-                          {firebaseEnabled ? "🌐 Auto-sync ON" : "💾 Auto-save ON"}
+                          ✅ Saved!
                         </span>
                       )}
                     </p>
@@ -2022,22 +1969,35 @@ export default function App() {
                   );
                 })()}
 
-                {/* <div
-                  className="mt-4 flex flex-wrap gap-3"
-                  style={{ fontSize: "13px", color: "#64748b" }}
-                >
-                  <span>✅ Sirf free teachers dikhenge</span>
-                  <span>
-                    📊 <strong>(3,2)</strong> = 3 free before break, 2 after
-                  </span>
-                  <span>🖨️ Print = school header + clean table</span>
-                  <span className="text-green-600 font-semibold">
-                    💾 Sab data auto-save ho raha hai
-                  </span>
-                </div> */}
+                {/* Save to Database Button */}
+                <div className="mt-8 mb-4 flex flex-col items-center justify-center border-t border-slate-200 pt-6">
+                  <button
+                    onClick={handleSaveToDatabase}
+                    disabled={saveStatus === "saving"}
+                    className="bg-emerald-600 text-white px-10 py-3 rounded-xl font-bold text-lg hover:bg-emerald-700 shadow-lg transform transition hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3"
+                  >
+                    {saveStatus === "saving" ? (
+                      <>
+                        <span className="animate-spin text-xl">⏳</span>
+                        Saving to Database...
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xl">💾</span>
+                        Save Adjustments to Database
+                      </>
+                    )}
+                  </button>
+                  {saveStatus === "saved" && (
+                    <p className="text-green-600 font-bold mt-3 animate-pulse">
+                      ✅ Data successfully saved!
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </>
+
         )}
 
         {/* RECORDS PAGE */}

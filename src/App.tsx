@@ -19,6 +19,8 @@ import {
 } from "./firebase";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+
 const AUTO_SAVE_DELAY = 2000;
 const BREAK_AFTER_IDX = 4;
 const DAYS = [
@@ -450,7 +452,7 @@ export default function App() {
   // ── Fetch Records from Database ──────────────────────────────────────────
   const fetchRecordsFromDB = async () => {
     try {
-      const res = await fetch('http://localhost:5000/api/adjustments');
+      const res = await fetch(`${API_BASE_URL}/api/adjustments`);
       const json = await res.json();
       if (json.success) {
         setRecords(json.data);
@@ -485,7 +487,7 @@ export default function App() {
         totalSubstitutes: totalSubs,
       };
 
-      const res = await fetch('http://localhost:5000/api/adjustments', {
+      const res = await fetch(`${API_BASE_URL}/api/adjustments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(record)
@@ -610,7 +612,7 @@ export default function App() {
   const handleDeleteRecord = async (id: string) => {
     if (!confirm("⚠️ Do you want to delete this record?")) return;
     try {
-      const res = await fetch(`http://localhost:5000/api/adjustments/${encodeURIComponent(id)}`, {
+      const res = await fetch(`${API_BASE_URL}/api/adjustments/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
       const json = await res.json();

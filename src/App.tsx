@@ -691,18 +691,12 @@ export default function App() {
   };
 
   const handlePrintRecord = (record: AdjustmentRecord) => {
-    const pa = document.getElementById("print-area");
-    if (pa) {
-      pa.innerHTML = buildPrintHTML(
-        record.columns,
-        record.date,
-        record.day,
-        schoolInfo,
-        PERIODS,
-        timings.majorBreak
-      );
-      window.print();
-    }
+    const win = window.open("", "_blank", "width=1200,height=900");
+    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
+    win.document.write(buildMultiPagePrintDoc(record.columns, record.date, record.day));
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 500);
   };
 
   // ── Column / teacher handlers ──────────────────────────────────────────────
@@ -783,11 +777,15 @@ export default function App() {
   };
 
   // ── Build a full standalone multi-page HTML document for print/PDF ──────────
-  const buildMultiPagePrintDoc = () => {
+  const buildMultiPagePrintDoc = (
+    printCols: Column[] = columns,
+    printDate: string = date,
+    printDay: string = selectedDay
+  ) => {
     // Split all columns into chunks of TEACHERS_PER_PAGE
     const chunks: Column[][] = [];
-    for (let i = 0; i < columns.length; i += TEACHERS_PER_PAGE) {
-      chunks.push(columns.slice(i, i + TEACHERS_PER_PAGE));
+    for (let i = 0; i < printCols.length; i += TEACHERS_PER_PAGE) {
+      chunks.push(printCols.slice(i, i + TEACHERS_PER_PAGE));
     }
 
     // Shared CSS for all pages
@@ -847,7 +845,7 @@ export default function App() {
 
     // Build one <div class="print-page"> per chunk
     const pages = chunks
-      .map((chunk) => `<div class="print-page">${buildPrintHTML(chunk, date, selectedDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`)
+      .map((chunk) => `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`)
       .join("\n");
 
     return `<!DOCTYPE html>
@@ -982,9 +980,10 @@ export default function App() {
             .print-container { padding: 30px; width: 100%; max-width: 210mm; margin: 0 auto; overflow: visible !important; }
             .no-print { display: flex; justify-content: flex-end; margin-bottom: 20px; }
             @media print { 
+              body > * { display: block !important; }
               .no-print { display: none !important; }
               body { padding: 0; }
-              .print-container { padding: 0; margin: 0; max-width: 100%; width: 100%; }
+              .print-container { padding: 0; margin: 0; max-width: 100%; width: 100%; display: block !important; }
             }
             #print-content { opacity: 1 !important; visibility: visible !important; }
             /* Force visibility for Tailwind classes */
@@ -1032,11 +1031,11 @@ export default function App() {
     win.document.write(winHtml);
     const target = win.document.getElementById('main-content-target');
     if (target) {
-      
       target.innerHTML = content.innerHTML;
     }
     win.document.close();
     win.focus();
+    setTimeout(() => { win.print(); }, 500);
   };
 
 

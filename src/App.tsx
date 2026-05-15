@@ -440,6 +440,7 @@ export default function App() {
 
   // ── Database Sync State ────────────────────────────────────────────────────
   const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">("local");
+  const isAutoSyncRef = useRef(false);
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -456,6 +457,23 @@ export default function App() {
       const json = await res.json();
       if (json.success) {
         setRecords(json.data);
+        
+        // AUTO-SYNC: Sync absent teachers so everyone can see them automatically
+        const todayRecord = json.data.find((r: AdjustmentRecord) => r.date === date);
+        if (todayRecord) {
+          setColumns((prevCols) => {
+            const dbColsStr = JSON.stringify(todayRecord.columns);
+            const prevColsStr = JSON.stringify(prevCols);
+            if (dbColsStr !== prevColsStr) {
+              isAutoSyncRef.current = true;
+              return JSON.parse(dbColsStr);
+            }
+            return prevCols;
+          });
+          if (selectedDay !== todayRecord.day) {
+            setSelectedDay(todayRecord.day);
+          }
+        }
       }
     } catch (err) {
       console.error("Failed to load records from DB:", err);
@@ -464,10 +482,36 @@ export default function App() {
 
   useEffect(() => {
     fetchRecordsFromDB();
-  }, []);
+    const intervalId = setInterval(fetchRecordsFromDB, 5000);
+    return () => clearInterval(intervalId);
+  }, [date]); // Re-run and sync to the currently viewed date
+
+  // ── Auto-Save to Database ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!loaded) return;
+    
+    if (isAutoSyncRef.current) {
+      isAutoSyncRef.current = false;
+      return;
+    }
+
+    const isLocalEmpty = columns.length === 1 && !columns[0].selectedTeacher && columns[0].substituteTeacher.every(s => !s);
+    if (isLocalEmpty) return;
+
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    
+    setSyncStatus("local");
+    autoSaveTimer.current = setTimeout(() => {
+      handleSaveToDatabase(true);
+    }, AUTO_SAVE_DELAY);
+    
+    return () => {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    };
+  }, [columns, date, selectedDay, loaded]);
 
   // ── Manual Save to Database ─────────────────────────────────────────────
-  const handleSaveToDatabase = async () => {
+  const handleSaveToDatabase = async (isAutoSave = false) => {
     setSaveStatus("saving");
     setSyncStatus("syncing");
 
@@ -499,7 +543,9 @@ export default function App() {
         setSyncStatus("connected");
         fetchRecordsFromDB(); // Refresh records
         setTimeout(() => setSaveStatus("idle"), 3000);
-        alert("✅ Data successfully saved to Database!");
+        if (!isAutoSave) {
+          alert("✅ Data successfully saved to Database!");
+        }
       } else {
         throw new Error(json.message);
       }
@@ -507,7 +553,9 @@ export default function App() {
       console.error("Save error:", err);
       setSaveStatus("idle");
       setSyncStatus("offline");
-      alert("❌ Failed to save to database. Is the backend running?");
+      if (!isAutoSave) {
+        alert("❌ Failed to save to database. Is the backend running?");
+      }
     }
   };
 
@@ -1974,7 +2022,7 @@ export default function App() {
                 {/* Save to Database Button */}
                 <div className="mt-8 mb-4 flex flex-col items-center justify-center border-t border-slate-200 pt-6">
                   <button
-                    onClick={handleSaveToDatabase}
+                    onClick={() => handleSaveToDatabase(false)}
                     disabled={saveStatus === "saving"}
                     className="bg-emerald-600 text-white px-10 py-3 rounded-xl font-bold text-lg hover:bg-emerald-700 shadow-lg transform transition hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3"
                   >

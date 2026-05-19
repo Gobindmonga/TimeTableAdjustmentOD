@@ -441,6 +441,8 @@ export default function App() {
   // ── Database Sync State ────────────────────────────────────────────────────
   const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">("local");
   const isAutoSyncRef = useRef(false);
+  // isSavingRef: true jab local change pending ho ya save ho raha ho — poller ko DB se overwrite karne se rokta hai
+  const isSavingRef = useRef(false);
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -459,8 +461,9 @@ export default function App() {
         setRecords(json.data);
         
         // AUTO-SYNC: Sync absent teachers so everyone can see them automatically
+        // isSavingRef check: agar local change pending hai to DB se overwrite mat karo
         const todayRecord = json.data.find((r: AdjustmentRecord) => r.date === date);
-        if (todayRecord) {
+        if (todayRecord && !isSavingRef.current) {
           setColumns((prevCols) => {
             const dbColsStr = JSON.stringify(todayRecord.columns);
             const prevColsStr = JSON.stringify(prevCols);
@@ -495,11 +498,10 @@ export default function App() {
       return;
     }
 
-    const isLocalEmpty = columns.length === 1 && !columns[0].selectedTeacher && columns[0].substituteTeacher.every(s => !s);
-    if (isLocalEmpty) return;
-
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     
+    // Poller ko rok do jab tak save complete na ho
+    isSavingRef.current = true;
     setSyncStatus("local");
     autoSaveTimer.current = setTimeout(() => {
       handleSaveToDatabase(true);
@@ -541,6 +543,7 @@ export default function App() {
       if (json.success) {
         setSaveStatus("saved");
         setSyncStatus("connected");
+        isSavingRef.current = false; // Save complete — poller ab sync kar sakta hai
         fetchRecordsFromDB(); // Refresh records
         setTimeout(() => setSaveStatus("idle"), 3000);
         if (!isAutoSave) {
@@ -553,6 +556,7 @@ export default function App() {
       console.error("Save error:", err);
       setSaveStatus("idle");
       setSyncStatus("offline");
+      isSavingRef.current = false; // Error pe bhi flag reset karo
       if (!isAutoSave) {
         alert("❌ Failed to save to database. Is the backend running?");
       }

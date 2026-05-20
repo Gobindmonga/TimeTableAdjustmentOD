@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "backend": "node DataBase/server.js",
+    "backend:dev": "node --watch DataBase/server.js"
   },
   "dependencies": {
     "clsx": "2.1.1",

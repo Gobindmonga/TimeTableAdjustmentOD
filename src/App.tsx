@@ -19,7 +19,17 @@ import {
 } from "./firebase";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const isLocalHost =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1";
+
+// Use VITE_API_URL from .env.local / Vercel env vars first.
+// On local development, fallback to localhost backend when VITE_API_URL is not set.
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  (isLocalHost
+    ? "http://localhost:5000"
+    : "https://timetableadjustmentod-2.onrender.com");
 
 const AUTO_SAVE_DELAY = 2000;
 const BREAK_AFTER_IDX = 4;
@@ -43,7 +53,7 @@ const DEFAULT_TIMINGS = {
     { label: "Period 8", start: "13:40", end: "14:15" },
     { label: "Period 9", start: "14:15", end: "14:25" },
   ],
-  majorBreak: { start: "12:05", end: "12:25" }
+  majorBreak: { start: "12:05", end: "12:25" },
 };
 
 // ── localStorage KEYS ─────────────────────────────────────────────────────────
@@ -238,7 +248,9 @@ function extractTeachers(rows: string[][]): Teacher[] {
     }
     i++;
   }
-  return teachers.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return teachers.sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
 }
 
 function isPeriodFree(teacher: Teacher, day: string, idx: number) {
@@ -246,7 +258,11 @@ function isPeriodFree(teacher: Teacher, day: string, idx: number) {
   return v === "" || v.toLowerCase() === "free" || v === "—" || v === "-";
 }
 
-function getFreePeriodCounts(teacher: Teacher, day: string, periodsLength: number) {
+function getFreePeriodCounts(
+  teacher: Teacher,
+  day: string,
+  periodsLength: number,
+) {
   let before = 0,
     after = 0;
   for (let i = 0; i <= BREAK_AFTER_IDX; i++)
@@ -307,8 +323,8 @@ function buildPrintHTML(
     <div class="school-header">
       ${logoHTML}
       <div class="school-info">
-        <div class="school-name-main">${schoolInfo.name1 ? schoolInfo.name1 + ' ' : ''}<span>${schoolInfo.name2}</span></div>
-        ${schoolInfo.type ? `<div class="school-type">${schoolInfo.type}</div>` : ''}
+        <div class="school-name-main">${schoolInfo.name1 ? schoolInfo.name1 + " " : ""}<span>${schoolInfo.name2}</span></div>
+        ${schoolInfo.type ? `<div class="school-type">${schoolInfo.type}</div>` : ""}
         <div class="school-address">${schoolInfo.address}</div>
         <div class="school-address">${schoolInfo.phone}</div>
       </div>
@@ -421,7 +437,7 @@ export default function App() {
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
-    })
+    }),
   );
   const [columns, setColumns] = useState<Column[]>([
     {
@@ -439,7 +455,9 @@ export default function App() {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Database Sync State ────────────────────────────────────────────────────
-  const [syncStatus, setSyncStatus] = useState<"connected" | "syncing" | "offline" | "local">("local");
+  const [syncStatus, setSyncStatus] = useState<
+    "connected" | "syncing" | "offline" | "local"
+  >("local");
   const isAutoSyncRef = useRef(false);
   // isSavingRef: true jab local change pending ho ya save ho raha ho — poller ko DB se overwrite karne se rokta hai
   const isSavingRef = useRef(false);
@@ -458,11 +476,18 @@ export default function App() {
       const res = await fetch(`${API_BASE_URL}/api/adjustments`);
       const json = await res.json();
       if (json.success) {
-        setRecords(json.data);
-        
+        setRecords(
+          json.data.map((r: AdjustmentRecord) => ({
+            ...r,
+            id: r.id || r.date,
+          })),
+        );
+
         // AUTO-SYNC: Sync absent teachers so everyone can see them automatically
         // isSavingRef check: agar local change pending hai to DB se overwrite mat karo
-        const todayRecord = json.data.find((r: AdjustmentRecord) => r.date === date);
+        const todayRecord = json.data.find(
+          (r: AdjustmentRecord) => r.date === date,
+        );
         if (todayRecord && !isSavingRef.current) {
           setColumns((prevCols) => {
             const dbColsStr = JSON.stringify(todayRecord.columns);
@@ -492,21 +517,21 @@ export default function App() {
   // ── Auto-Save to Database ─────────────────────────────────────────────
   useEffect(() => {
     if (!loaded) return;
-    
+
     if (isAutoSyncRef.current) {
       isAutoSyncRef.current = false;
       return;
     }
 
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-    
+
     // Poller ko rok do jab tak save complete na ho
     isSavingRef.current = true;
     setSyncStatus("local");
     autoSaveTimer.current = setTimeout(() => {
       handleSaveToDatabase(true);
     }, AUTO_SAVE_DELAY);
-    
+
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
@@ -520,7 +545,9 @@ export default function App() {
     try {
       let totalSubs = 0;
       columns.forEach((col) => {
-        totalSubs += col.substituteTeacher.filter((s) => s.trim() !== "").length;
+        totalSubs += col.substituteTeacher.filter(
+          (s) => s.trim() !== "",
+        ).length;
       });
 
       const record: AdjustmentRecord = {
@@ -534,9 +561,9 @@ export default function App() {
       };
 
       const res = await fetch(`${API_BASE_URL}/api/adjustments`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record)
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(record),
       });
 
       const json = await res.json();
@@ -584,7 +611,10 @@ export default function App() {
       }
       setTeachers(extracted);
       setLoaded(true);
-      console.log("📄 Google Sheet data fetched successfully (%d teachers)", extracted.length);
+      console.log(
+        "📄 Google Sheet data fetched successfully (%d teachers)",
+        extracted.length,
+      );
     } catch {
       setError(
         "Sheet failed to load. Is it publicly shared? (Anyone with link → Viewer)",
@@ -602,8 +632,23 @@ export default function App() {
   useEffect(() => {
     const pa = document.getElementById("print-area");
     if (!pa || !loaded) return;
-    pa.innerHTML = buildPrintHTML(columns, date, selectedDay, schoolInfo, PERIODS, timings.majorBreak);
-  }, [columns, date, selectedDay, loaded, schoolInfo, PERIODS, timings.majorBreak]);
+    pa.innerHTML = buildPrintHTML(
+      columns,
+      date,
+      selectedDay,
+      schoolInfo,
+      PERIODS,
+      timings.majorBreak,
+    );
+  }, [
+    columns,
+    date,
+    selectedDay,
+    loaded,
+    schoolInfo,
+    PERIODS,
+    timings.majorBreak,
+  ]);
 
   // ── Logo handlers ──────────────────────────────────────────────────────────
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -664,12 +709,16 @@ export default function App() {
   const handleDeleteRecord = async (id: string) => {
     if (!confirm("⚠️ Do you want to delete this record?")) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/adjustments/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(
+        `${API_BASE_URL}/api/adjustments?date=${encodeURIComponent(id)}`,
+        {
+          method: "DELETE",
+        },
+      );
       const json = await res.json();
       if (json.success) {
         setRecords((prev) => prev.filter((r) => r.id !== id));
+        fetchRecordsFromDB();
         alert("✅ Record deleted!");
       } else {
         alert("❌ Failed to delete record.");
@@ -696,11 +745,18 @@ export default function App() {
 
   const handlePrintRecord = (record: AdjustmentRecord) => {
     const win = window.open("", "_blank", "width=1200,height=900");
-    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
-    win.document.write(buildMultiPagePrintDoc(record.columns, record.date, record.day));
+    if (!win) {
+      alert("Popup blocked! Please allow popups for this site.");
+      return;
+    }
+    win.document.write(
+      buildMultiPagePrintDoc(record.columns, record.date, record.day),
+    );
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); }, 500);
+    setTimeout(() => {
+      win.print();
+    }, 500);
   };
 
   // ── Column / teacher handlers ──────────────────────────────────────────────
@@ -784,7 +840,7 @@ export default function App() {
   const buildMultiPagePrintDoc = (
     printCols: Column[] = columns,
     printDate: string = date,
-    printDay: string = selectedDay
+    printDay: string = selectedDay,
   ) => {
     // Split all columns into chunks of TEACHERS_PER_PAGE
     const chunks: Column[][] = [];
@@ -849,7 +905,10 @@ export default function App() {
 
     // Build one <div class="print-page"> per chunk
     const pages = chunks
-      .map((chunk) => `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`)
+      .map(
+        (chunk) =>
+          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`,
+      )
       .join("\n");
 
     return `<!DOCTYPE html>
@@ -861,11 +920,16 @@ export default function App() {
 
   const handlePrint = () => {
     const win = window.open("", "_blank", "width=1200,height=900");
-    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
+    if (!win) {
+      alert("Popup blocked! Please allow popups for this site.");
+      return;
+    }
     win.document.write(buildMultiPagePrintDoc());
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); }, 500);
+    setTimeout(() => {
+      win.print();
+    }, 500);
   };
 
   // ── Shared Print Styles ──
@@ -895,12 +959,18 @@ export default function App() {
 
   const handleDownloadPDF = () => {
     const win = window.open("", "_blank", "width=1200,height=900");
-    if (!win) { alert("Popup blocked! Please allow popups for this site."); return; }
-    
+    if (!win) {
+      alert("Popup blocked! Please allow popups for this site.");
+      return;
+    }
+
     const docHtml = buildMultiPagePrintDoc();
-    
+
     // Add html2pdf CDN and download logic
-    const enhancedHtml = docHtml.replace("</head>", `
+    const enhancedHtml = docHtml
+      .replace(
+        "</head>",
+        `
         <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
         <script>
           async function downloadAsPDF() {
@@ -936,7 +1006,11 @@ export default function App() {
           }
         </script>
       </head>
-    `).replace("<body>", `
+    `,
+      )
+      .replace(
+        "<body>",
+        `
       <body>
         <div class="no-print" style="position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; gap: 10px;">
           <button onclick="downloadAsPDF()" style="background: #10b981; color: white; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
@@ -952,8 +1026,9 @@ export default function App() {
         <style>
           @media print { .no-print { display: none !important; } }
         </style>
-    `);
-    
+    `,
+      );
+
     win.document.write(enhancedHtml);
     win.document.close();
     win.focus();
@@ -967,8 +1042,10 @@ export default function App() {
     if (!win) return;
 
     // Get all style tags and link tags to ensure Tailwind and other styles are copied
-    const styles = Array.from(document.querySelectorAll("style, link[rel='stylesheet']"))
-      .map(s => s.outerHTML)
+    const styles = Array.from(
+      document.querySelectorAll("style, link[rel='stylesheet']"),
+    )
+      .map((s) => s.outerHTML)
       .join("\n");
 
     const winHtml = `
@@ -1020,7 +1097,7 @@ export default function App() {
                 <h1 style="font-size: 26px; color: #1e293b; margin-bottom: 10px;">${title}</h1>
                 <h2 style="font-size: 18px; color: #ef4444; margin: 0;">${schoolInfo.name1} ${schoolInfo.name2}</h2>
                 <p style="color: #64748b; font-size: 13px; margin: 5px 0;">${schoolInfo.address}</p>
-                <p style="color: #64748b; font-size: 12px;">Report Generated: ${new Date().toLocaleString('en-IN')}</p>
+                <p style="color: #64748b; font-size: 12px;">Report Generated: ${new Date().toLocaleString("en-IN")}</p>
               </div>
               <div id="main-content-target"></div>
               <div style="margin-top: 80px; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px;">
@@ -1033,16 +1110,16 @@ export default function App() {
       </html>
     `;
     win.document.write(winHtml);
-    const target = win.document.getElementById('main-content-target');
+    const target = win.document.getElementById("main-content-target");
     if (target) {
       target.innerHTML = content.innerHTML;
     }
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); }, 500);
+    setTimeout(() => {
+      win.print();
+    }, 500);
   };
-
-
 
   // ══════════════════════════════════════════════════════════════════════════
   return (
@@ -1096,7 +1173,9 @@ export default function App() {
                   lineHeight: 1.1,
                 }}
               >
-                {schoolInfo.name1 && <span className="text-slate-900">{schoolInfo.name1} </span>}
+                {schoolInfo.name1 && (
+                  <span className="text-slate-900">{schoolInfo.name1} </span>
+                )}
                 <span className="text-red-600">{schoolInfo.name2}</span>
               </div>
               {schoolInfo.type && (
@@ -1321,11 +1400,13 @@ export default function App() {
               <p className="text-slate-500 text-sm mb-6">
                 Format: HH:MM (e.g. 08:00). Saved on this device.
               </p>
-              
+
               <div className="flex flex-col gap-3">
                 {timings.periods.slice(0, 5).map((p, idx) => (
                   <div key={idx} className="flex items-center gap-4">
-                    <span className="w-24 font-bold text-slate-800">{p.label}</span>
+                    <span className="w-24 font-bold text-slate-800">
+                      {p.label}
+                    </span>
                     <input
                       type="text"
                       value={p.start}
@@ -1351,18 +1432,36 @@ export default function App() {
                 ))}
 
                 <div className="bg-red-50 border border-red-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
-                  <span className="w-24 font-bold text-red-700">Major Break</span>
+                  <span className="w-24 font-bold text-red-700">
+                    Major Break
+                  </span>
                   <input
                     type="text"
                     value={timings.majorBreak.start}
-                    onChange={(e) => setTimings({ ...timings, majorBreak: { ...timings.majorBreak, start: e.target.value } })}
+                    onChange={(e) =>
+                      setTimings({
+                        ...timings,
+                        majorBreak: {
+                          ...timings.majorBreak,
+                          start: e.target.value,
+                        },
+                      })
+                    }
                     className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400 bg-white"
                   />
                   <span className="text-slate-400">-</span>
                   <input
                     type="text"
                     value={timings.majorBreak.end}
-                    onChange={(e) => setTimings({ ...timings, majorBreak: { ...timings.majorBreak, end: e.target.value } })}
+                    onChange={(e) =>
+                      setTimings({
+                        ...timings,
+                        majorBreak: {
+                          ...timings.majorBreak,
+                          end: e.target.value,
+                        },
+                      })
+                    }
                     className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400 bg-white"
                   />
                 </div>
@@ -1371,7 +1470,9 @@ export default function App() {
                   const idx = i + 5;
                   return (
                     <div key={idx} className="flex items-center gap-4">
-                      <span className="w-24 font-bold text-slate-800">{p.label}</span>
+                      <span className="w-24 font-bold text-slate-800">
+                        {p.label}
+                      </span>
                       <input
                         type="text"
                         value={p.start}
@@ -1401,7 +1502,11 @@ export default function App() {
               <div className="flex justify-between items-center mt-6 pt-4 border-t border-slate-200">
                 <button
                   onClick={() => {
-                    if (confirm("Are you sure you want to reset to default times?")) {
+                    if (
+                      confirm(
+                        "Are you sure you want to reset to default times?",
+                      )
+                    ) {
                       setTimings(DEFAULT_TIMINGS);
                     }
                   }}
@@ -1582,12 +1687,16 @@ export default function App() {
 
                 {/* ── Teacher Page Navigation ─────────────────────── */}
                 {(() => {
-                  const totalPages = Math.ceil(columns.length / TEACHERS_PER_PAGE);
+                  const totalPages = Math.ceil(
+                    columns.length / TEACHERS_PER_PAGE,
+                  );
                   if (totalPages <= 1) return null;
                   return (
                     <div className="flex items-center justify-between mb-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-blue-800 font-bold text-sm">📄 Page:</span>
+                        <span className="text-blue-800 font-bold text-sm">
+                          📄 Page:
+                        </span>
                         {Array.from({ length: totalPages }, (_, i) => (
                           <button
                             key={i}
@@ -1604,18 +1713,28 @@ export default function App() {
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-blue-600 text-xs font-semibold">
-                          Showing teachers {tablePageIdx * TEACHERS_PER_PAGE + 1}–{Math.min((tablePageIdx + 1) * TEACHERS_PER_PAGE, columns.length)} of {columns.length}
+                          Showing teachers{" "}
+                          {tablePageIdx * TEACHERS_PER_PAGE + 1}–
+                          {Math.min(
+                            (tablePageIdx + 1) * TEACHERS_PER_PAGE,
+                            columns.length,
+                          )}{" "}
+                          of {columns.length}
                         </span>
                         <button
                           disabled={tablePageIdx === 0}
-                          onClick={() => setTablePageIdx(p => p - 1)}
+                          onClick={() => setTablePageIdx((p) => p - 1)}
                           className="px-3 py-1 rounded-lg bg-white border border-blue-300 text-blue-700 font-bold text-sm hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >← Prev</button>
+                        >
+                          ← Prev
+                        </button>
                         <button
                           disabled={tablePageIdx >= totalPages - 1}
-                          onClick={() => setTablePageIdx(p => p + 1)}
+                          onClick={() => setTablePageIdx((p) => p + 1)}
                           className="px-3 py-1 rounded-lg bg-white border border-blue-300 text-blue-700 font-bold text-sm hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
-                        >Next →</button>
+                        >
+                          Next →
+                        </button>
                       </div>
                     </div>
                   );
@@ -1648,377 +1767,398 @@ export default function App() {
                 {(() => {
                   const visibleColumns = columns.slice(
                     tablePageIdx * TEACHERS_PER_PAGE,
-                    (tablePageIdx + 1) * TEACHERS_PER_PAGE
+                    (tablePageIdx + 1) * TEACHERS_PER_PAGE,
                   );
                   return (
-                <div className="overflow-x-auto">
-                  <table
-                    className="w-full border-collapse"
-                    style={{ fontSize: "14px" }}
-                  >
-                    <thead>
-                      <tr className="bg-white text-black">
-                        <th
-                          colSpan={3}
-                          rowSpan={2}
-                          className="border border-slate-700 px-3 py-3 text-center font-semibold uppercase align-middle"
-                        >
-                          Period / Time
-                        </th>
-                        <th
-                          colSpan={visibleColumns.length}
-                          className="border border-slate-700 px-3 py-2 text-center font-bold uppercase"
-                          style={{ fontSize: "16px", letterSpacing: "3px" }}
-                        >
-                          TEACHERS ON LEAVE
-                        </th>
-                      </tr>
-                      <tr className="bg-white text-black">
-                        {visibleColumns.map((col) => (
-                          <th
-                            key={col.id}
-                            className="border border-slate-700 px-3 py-2 min-w-[220px]"
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="text-left">
-                                <div
-                                  style={{ fontSize: "14px" }}
-                                  className="font-bold"
-                                >
-                                  {col.selectedTeacher || "— Select Teacher —"}
+                    <div className="overflow-x-auto">
+                      <table
+                        className="w-full border-collapse"
+                        style={{ fontSize: "14px" }}
+                      >
+                        <thead>
+                          <tr className="bg-white text-black">
+                            <th
+                              colSpan={3}
+                              rowSpan={2}
+                              className="border border-slate-700 px-3 py-3 text-center font-semibold uppercase align-middle"
+                            >
+                              Period / Time
+                            </th>
+                            <th
+                              colSpan={visibleColumns.length}
+                              className="border border-slate-700 px-3 py-2 text-center font-bold uppercase"
+                              style={{ fontSize: "16px", letterSpacing: "3px" }}
+                            >
+                              TEACHERS ON LEAVE
+                            </th>
+                          </tr>
+                          <tr className="bg-white text-black">
+                            {visibleColumns.map((col) => (
+                              <th
+                                key={col.id}
+                                className="border border-slate-700 px-3 py-2 min-w-[220px]"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="text-left">
+                                    <div
+                                      style={{ fontSize: "14px" }}
+                                      className="font-bold"
+                                    >
+                                      {col.selectedTeacher ||
+                                        "— Select Teacher —"}
+                                    </div>
+                                    {col.selectedTeacher && (
+                                      <div
+                                        style={{
+                                          fontSize: "11px",
+                                          color: "#64748b",
+                                        }}
+                                      >
+                                        {selectedDay}
+                                      </div>
+                                    )}
+                                  </div>
+                                  {columns.length > 1 && (
+                                    <button
+                                      onClick={() => removeColumn(col.id)}
+                                      className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
+                                      style={{ fontSize: "18px" }}
+                                    >
+                                      ✕
+                                    </button>
+                                  )}
                                 </div>
-                                {col.selectedTeacher && (
+                              </th>
+                            ))}
+                          </tr>
+                          <tr className="bg-blue-50">
+                            <td
+                              colSpan={3}
+                              className="border border-slate-300 px-3 py-2 font-bold text-slate-700 text-center"
+                              style={{ fontSize: "14px" }}
+                            >
+                              Absent Teacher
+                            </td>
+                            {visibleColumns.map((col) => (
+                              <td
+                                key={col.id}
+                                className="border border-slate-300 px-2 py-2"
+                              >
+                                <select
+                                  value={col.selectedTeacher}
+                                  onChange={(e) =>
+                                    handleTeacherSelect(col.id, e.target.value)
+                                  }
+                                  style={{ fontSize: "14px" }}
+                                  className="w-full border-2 border-blue-400 rounded-lg px-2 py-2 bg-white text-blue-900 font-bold"
+                                >
+                                  <option value="">
+                                    -- Select Absent Teacher --
+                                  </option>
+                                  {teachers.map((t) => (
+                                    <option key={t.name} value={t.name}>
+                                      {t.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={col.selectedTeacher}
+                                  onChange={(e) =>
+                                    handleTeacherSelect(col.id, e.target.value)
+                                  }
+                                  style={{ fontSize: "12px", marginTop: "6px" }}
+                                  className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-700 focus:outline-none"
+                                >
+                                  <option value="">
+                                    -- Manual Select (All with load) --
+                                  </option>
+                                  {teachers.map((t) => {
+                                    const { before, after } =
+                                      getFreePeriodCounts(
+                                        t,
+                                        selectedDay,
+                                        PERIODS.length,
+                                      );
+                                    return (
+                                      <option key={t.name} value={t.name}>
+                                        {t.name} ({before},{after})
+                                      </option>
+                                    );
+                                  })}
+                                </select>
+                              </td>
+                            ))}
+                          </tr>
+                        </thead>
+
+                        <tbody>
+                          {PERIODS.map((period, pIdx) => (
+                            <React.Fragment key={pIdx}>
+                              {/* CLASS ROW */}
+                              <tr>
+                                <td
+                                  rowSpan={3}
+                                  className="border border-slate-300 text-center bg-white text-black font-bold px-1 py-2"
+                                  style={{ width: "50px" }}
+                                >
                                   <div
+                                    style={{ fontSize: "15px" }}
+                                    className="font-extrabold"
+                                  >
+                                    {period.label}
+                                  </div>
+                                </td>
+                                <td
+                                  rowSpan={3}
+                                  className="border border-slate-300 text-center bg-white text-slate-600 px-1 py-2"
+                                  style={{ width: "70px", fontSize: "11px" }}
+                                >
+                                  {period.time}
+                                </td>
+                                <td
+                                  className="border border-slate-300 px-2 py-2 font-bold text-amber-800 uppercase bg-amber-50 whitespace-nowrap"
+                                  style={{ fontSize: "13px", width: "70px" }}
+                                >
+                                  📚 Class
+                                </td>
+                                {visibleColumns.map((col) => {
+                                  const classVal = col.classValues[pIdx] ?? "";
+                                  const isFree =
+                                    col.selectedTeacher &&
+                                    (classVal.trim() === "" ||
+                                      classVal.trim().toLowerCase() === "free");
+                                  return (
+                                    <td
+                                      key={col.id}
+                                      className="border border-slate-300 px-2 py-1"
+                                    >
+                                      {isFree ? (
+                                        <div
+                                          className="w-full text-center font-bold px-2 py-2 rounded-md bg-slate-100 text-slate-400 border-2 border-dashed border-slate-300"
+                                          style={{ fontSize: "14px" }}
+                                        >
+                                          Free
+                                        </div>
+                                      ) : (
+                                        <input
+                                          type="text"
+                                          value={classVal}
+                                          onChange={(e) =>
+                                            updateClassValue(
+                                              col.id,
+                                              pIdx,
+                                              e.target.value,
+                                            )
+                                          }
+                                          placeholder={
+                                            col.selectedTeacher ? "" : "—"
+                                          }
+                                          style={{ fontSize: "15px" }}
+                                          className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
+                                        />
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+
+                              {/* SUB ROW */}
+                              <tr>
+                                <td
+                                  className="border border-slate-300 px-2 py-2 font-bold text-green-800 uppercase bg-green-50 whitespace-nowrap"
+                                  style={{ fontSize: "13px" }}
+                                >
+                                  👤 Sub.
+                                </td>
+                                {visibleColumns.map((col) => {
+                                  const classVal = col.classValues[pIdx] ?? "";
+                                  const isFree = col.selectedTeacher
+                                    ? classVal.trim() === "" ||
+                                      classVal.trim().toLowerCase() === "free"
+                                    : true;
+                                  const avail = getAvailableSubstitutes(
+                                    teachers,
+                                    columns,
+                                    col.id,
+                                    pIdx,
+                                    selectedDay,
+                                    PERIODS.length,
+                                  );
+                                  const cur = col.substituteTeacher[pIdx] || "";
+                                  const isValid =
+                                    cur && avail.some((t) => t.name === cur);
+                                  return (
+                                    <td
+                                      key={col.id}
+                                      className="border border-slate-300 px-2 py-1"
+                                    >
+                                      {isFree || !col.selectedTeacher ? (
+                                        <div
+                                          className="w-full text-center text-slate-300 italic py-2"
+                                          style={{ fontSize: "13px" }}
+                                        >
+                                          — Free —
+                                        </div>
+                                      ) : (
+                                        <div>
+                                          <select
+                                            value={cur}
+                                            onChange={(e) =>
+                                              updateSubstitute(
+                                                col.id,
+                                                pIdx,
+                                                e.target.value,
+                                              )
+                                            }
+                                            style={{ fontSize: "13px" }}
+                                            className={`w-full border rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-green-400 ${cur ? "border-green-400 bg-green-50 text-green-800 font-semibold" : "border-slate-300"}`}
+                                          >
+                                            <option value="">
+                                              {avail.length === 0
+                                                ? "⚠️ No free teacher"
+                                                : `-- Select Sub (${avail.length} free) --`}
+                                            </option>
+                                            {cur && !isValid && (
+                                              <option
+                                                value={cur}
+                                                style={{ color: "orange" }}
+                                              >
+                                                ⚠️ {cur} (now busy)
+                                              </option>
+                                            )}
+                                            {avail.map((t) => (
+                                              <option
+                                                key={t.name}
+                                                value={t.name}
+                                              >
+                                                {t.name} ({t.freeBefore},
+                                                {t.freeAfter})
+                                              </option>
+                                            ))}
+                                          </select>
+                                          <select
+                                            value={cur}
+                                            onChange={(e) =>
+                                              updateSubstitute(
+                                                col.id,
+                                                pIdx,
+                                                e.target.value,
+                                              )
+                                            }
+                                            style={{
+                                              fontSize: "11px",
+                                              marginTop: "4px",
+                                            }}
+                                            className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-600 focus:outline-none"
+                                          >
+                                            <option value="">
+                                              -- Manual Select (All) --
+                                            </option>
+                                            {teachers.map((t) => {
+                                              const { before, after } =
+                                                getFreePeriodCounts(
+                                                  t,
+                                                  selectedDay,
+                                                  PERIODS.length,
+                                                );
+                                              return (
+                                                <option
+                                                  key={t.name}
+                                                  value={t.name}
+                                                >
+                                                  {t.name} ({before},{after})
+                                                </option>
+                                              );
+                                            })}
+                                          </select>
+                                          <div className="mt-1 flex justify-between px-1">
+                                            {avail.length === 0 ? (
+                                              <span
+                                                style={{ fontSize: "12px" }}
+                                                className="text-red-500 font-semibold"
+                                              >
+                                                ⚠️ None free!
+                                              </span>
+                                            ) : (
+                                              <span
+                                                style={{ fontSize: "12px" }}
+                                                className="text-green-600"
+                                              >
+                                                {avail.length} available
+                                              </span>
+                                            )}
+                                            <span
+                                              style={{ fontSize: "11px" }}
+                                              className="text-slate-400"
+                                            >
+                                              (before,after)
+                                            </span>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+
+                              {/* SIGN ROW */}
+                              <tr>
+                                <td
+                                  className="border border-slate-300 px-2 py-2 font-bold text-purple-800 uppercase bg-purple-50 whitespace-nowrap"
+                                  style={{ fontSize: "13px" }}
+                                >
+                                  ✍️ Sign
+                                </td>
+                                {visibleColumns.map((col) => {
+                                  const cv = col.classValues[pIdx] ?? "";
+                                  const isFree =
+                                    cv.trim() === "" ||
+                                    cv.trim().toLowerCase() === "free";
+                                  return (
+                                    <td
+                                      key={col.id}
+                                      className={`border border-slate-300 px-2 py-6 ${isFree ? "bg-slate-50" : ""}`}
+                                    />
+                                  );
+                                })}
+                              </tr>
+
+                              {pIdx === BREAK_AFTER_IDX && (
+                                <tr>
+                                  <td
+                                    colSpan={3 + visibleColumns.length}
+                                    className="border border-yellow-400 text-center font-bold py-2"
                                     style={{
-                                      fontSize: "11px",
-                                      color: "#64748b",
+                                      background: "#fef9c3",
+                                      color: "#854d0e",
+                                      fontSize: "13px",
                                     }}
                                   >
-                                    {selectedDay}
-                                  </div>
-                                )}
-                              </div>
-                              {columns.length > 1 && (
-                                <button
-                                  onClick={() => removeColumn(col.id)}
-                                  className="text-red-500 hover:text-red-700 ml-2 flex-shrink-0"
-                                  style={{ fontSize: "18px" }}
-                                >
-                                  ✕
-                                </button>
+                                    ━━━ MAJOR BREAK ({timings.majorBreak.start}{" "}
+                                    – {timings.majorBreak.end}) ━━━
+                                  </td>
+                                </tr>
                               )}
-                            </div>
-                          </th>
-                        ))}
-                      </tr>
-                      <tr className="bg-blue-50">
-                        <td
-                          colSpan={3}
-                          className="border border-slate-300 px-3 py-2 font-bold text-slate-700 text-center"
-                          style={{ fontSize: "14px" }}
-                        >
-                          Absent Teacher
-                        </td>
-                        {visibleColumns.map((col) => (
-                          <td
-                            key={col.id}
-                            className="border border-slate-300 px-2 py-2"
-                          >
-                            <select
-                              value={col.selectedTeacher}
-                              onChange={(e) =>
-                                handleTeacherSelect(col.id, e.target.value)
-                              }
-                              style={{ fontSize: "14px" }}
-                              className="w-full border-2 border-blue-400 rounded-lg px-2 py-2 bg-white text-blue-900 font-bold"
-                            >
-                              <option value="">
-                                -- Select Absent Teacher --
-                              </option>
-                              {teachers.map((t) => (
-                                <option key={t.name} value={t.name}>
-                                  {t.name}
-                                </option>
-                              ))}
-                            </select>
-                            <select
-                              value={col.selectedTeacher}
-                              onChange={(e) =>
-                                handleTeacherSelect(col.id, e.target.value)
-                              }
-                              style={{ fontSize: "12px", marginTop: "6px" }}
-                              className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-700 focus:outline-none"
-                            >
-                              <option value="">
-                                -- Manual Select (All with load) --
-                              </option>
-                              {teachers.map((t) => {
-                                const { before, after } = getFreePeriodCounts(t, selectedDay, PERIODS.length);
-                                return (
-                                  <option key={t.name} value={t.name}>
-                                    {t.name} ({before},{after})
-                                  </option>
-                                );
-                              })}
-                            </select>
-                          </td>
-                        ))}
-                      </tr>
-                    </thead>
+                            </React.Fragment>
+                          ))}
+                        </tbody>
 
-                    <tbody>
-                      {PERIODS.map((period, pIdx) => (
-                        <React.Fragment key={pIdx}>
-                          {/* CLASS ROW */}
-                          <tr>
+                        <tfoot>
+                          <tr className="bg-slate-100">
                             <td
-                              rowSpan={3}
-                              className="border border-slate-300 text-center bg-white text-black font-bold px-1 py-2"
-                              style={{ width: "50px" }}
+                              colSpan={3 + visibleColumns.length}
+                              className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
+                              style={{ fontSize: "14px" }}
                             >
-                              <div
-                                style={{ fontSize: "15px" }}
-                                className="font-extrabold"
-                              >
-                                {period.label}
+                              <div className="flex justify-between">
+                                <span>PRINCIPAL</span>
+                                <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
                               </div>
                             </td>
-                            <td
-                              rowSpan={3}
-                              className="border border-slate-300 text-center bg-white text-slate-600 px-1 py-2"
-                              style={{ width: "70px", fontSize: "11px" }}
-                            >
-                              {period.time}
-                            </td>
-                            <td
-                              className="border border-slate-300 px-2 py-2 font-bold text-amber-800 uppercase bg-amber-50 whitespace-nowrap"
-                              style={{ fontSize: "13px", width: "70px" }}
-                            >
-                              📚 Class
-                            </td>
-                            {visibleColumns.map((col) => {
-                              const classVal = col.classValues[pIdx] ?? "";
-                              const isFree =
-                                col.selectedTeacher &&
-                                (classVal.trim() === "" ||
-                                  classVal.trim().toLowerCase() === "free");
-                              return (
-                                <td
-                                  key={col.id}
-                                  className="border border-slate-300 px-2 py-1"
-                                >
-                                  {isFree ? (
-                                    <div
-                                      className="w-full text-center font-bold px-2 py-2 rounded-md bg-slate-100 text-slate-400 border-2 border-dashed border-slate-300"
-                                      style={{ fontSize: "14px" }}
-                                    >
-                                      Free
-                                    </div>
-                                  ) : (
-                                    <input
-                                      type="text"
-                                      value={classVal}
-                                      onChange={(e) =>
-                                        updateClassValue(
-                                          col.id,
-                                          pIdx,
-                                          e.target.value,
-                                        )
-                                      }
-                                      placeholder={
-                                        col.selectedTeacher ? "" : "—"
-                                      }
-                                      style={{ fontSize: "15px" }}
-                                      className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
-                                    />
-                                  )}
-                                </td>
-                              );
-                            })}
                           </tr>
-
-                          {/* SUB ROW */}
-                          <tr>
-                            <td
-                              className="border border-slate-300 px-2 py-2 font-bold text-green-800 uppercase bg-green-50 whitespace-nowrap"
-                              style={{ fontSize: "13px" }}
-                            >
-                              👤 Sub.
-                            </td>
-                            {visibleColumns.map((col) => {
-                              const classVal = col.classValues[pIdx] ?? "";
-                              const isFree = col.selectedTeacher
-                                ? classVal.trim() === "" ||
-                                  classVal.trim().toLowerCase() === "free"
-                                : true;
-                              const avail = getAvailableSubstitutes(
-                                teachers,
-                                columns,
-                                col.id,
-                                pIdx,
-                                selectedDay,
-                                PERIODS.length
-                              );
-                              const cur = col.substituteTeacher[pIdx] || "";
-                              const isValid =
-                                cur && avail.some((t) => t.name === cur);
-                              return (
-                                <td
-                                  key={col.id}
-                                  className="border border-slate-300 px-2 py-1"
-                                >
-                                  {isFree || !col.selectedTeacher ? (
-                                    <div
-                                      className="w-full text-center text-slate-300 italic py-2"
-                                      style={{ fontSize: "13px" }}
-                                    >
-                                      — Free —
-                                    </div>
-                                  ) : (
-                                    <div>
-                                      <select
-                                        value={cur}
-                                        onChange={(e) =>
-                                          updateSubstitute(
-                                            col.id,
-                                            pIdx,
-                                            e.target.value,
-                                          )
-                                        }
-                                        style={{ fontSize: "13px" }}
-                                        className={`w-full border rounded-md px-2 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-green-400 ${cur ? "border-green-400 bg-green-50 text-green-800 font-semibold" : "border-slate-300"}`}
-                                      >
-                                        <option value="">
-                                          {avail.length === 0
-                                            ? "⚠️ No free teacher"
-                                            : `-- Select Sub (${avail.length} free) --`}
-                                        </option>
-                                        {cur && !isValid && (
-                                          <option
-                                            value={cur}
-                                            style={{ color: "orange" }}
-                                          >
-                                            ⚠️ {cur} (now busy)
-                                          </option>
-                                        )}
-                                        {avail.map((t) => (
-                                          <option key={t.name} value={t.name}>
-                                            {t.name} ({t.freeBefore},
-                                            {t.freeAfter})
-                                          </option>
-                                        ))}
-                                      </select>
-                                      <select
-                                        value={cur}
-                                        onChange={(e) =>
-                                          updateSubstitute(
-                                            col.id,
-                                            pIdx,
-                                            e.target.value,
-                                          )
-                                        }
-                                        style={{ fontSize: "11px", marginTop: "4px" }}
-                                        className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-600 focus:outline-none"
-                                      >
-                                        <option value="">
-                                          -- Manual Select (All) --
-                                        </option>
-                                        {teachers.map((t) => {
-                                          const { before, after } = getFreePeriodCounts(t, selectedDay, PERIODS.length);
-                                          return (
-                                            <option key={t.name} value={t.name}>
-                                              {t.name} ({before},{after})
-                                            </option>
-                                          );
-                                        })}
-                                      </select>
-                                      <div className="mt-1 flex justify-between px-1">
-                                        {avail.length === 0 ? (
-                                          <span
-                                            style={{ fontSize: "12px" }}
-                                            className="text-red-500 font-semibold"
-                                          >
-                                            ⚠️ None free!
-                                          </span>
-                                        ) : (
-                                          <span
-                                            style={{ fontSize: "12px" }}
-                                            className="text-green-600"
-                                          >
-                                            {avail.length} available
-                                          </span>
-                                        )}
-                                        <span
-                                          style={{ fontSize: "11px" }}
-                                          className="text-slate-400"
-                                        >
-                                          (before,after)
-                                        </span>
-                                      </div>
-                                    </div>
-                                  )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-
-                          {/* SIGN ROW */}
-                          <tr>
-                            <td
-                              className="border border-slate-300 px-2 py-2 font-bold text-purple-800 uppercase bg-purple-50 whitespace-nowrap"
-                              style={{ fontSize: "13px" }}
-                            >
-                              ✍️ Sign
-                            </td>
-                            {visibleColumns.map((col) => {
-                              const cv = col.classValues[pIdx] ?? "";
-                              const isFree =
-                                cv.trim() === "" ||
-                                cv.trim().toLowerCase() === "free";
-                              return (
-                                <td
-                                  key={col.id}
-                                  className={`border border-slate-300 px-2 py-6 ${isFree ? "bg-slate-50" : ""}`}
-                                />
-                              );
-                            })}
-                          </tr>
-
-                          {pIdx === BREAK_AFTER_IDX && (
-                            <tr>
-                              <td
-                                colSpan={3 + visibleColumns.length}
-                                className="border border-yellow-400 text-center font-bold py-2"
-                                style={{
-                                  background: "#fef9c3",
-                                  color: "#854d0e",
-                                  fontSize: "13px",
-                                }}
-                              >
-                                ━━━ MAJOR BREAK ({timings.majorBreak.start} – {timings.majorBreak.end}) ━━━
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      ))}
-                    </tbody>
-
-                    <tfoot>
-                      <tr className="bg-slate-100">
-                        <td
-                          colSpan={3 + visibleColumns.length}
-                          className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
-                          style={{ fontSize: "14px" }}
-                        >
-                          <div className="flex justify-between">
-                            <span>PRINCIPAL</span>
-                            <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
-                          </div>
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
+                        </tfoot>
+                      </table>
+                    </div>
                   );
                 })()}
 
@@ -2050,7 +2190,6 @@ export default function App() {
               </div>
             )}
           </>
-
         )}
 
         {/* RECORDS PAGE */}
@@ -2065,7 +2204,10 @@ export default function App() {
           />
         )}
       </div>
-      <div id="print-area" style={{ position: "absolute", left: "-9999px", top: "-9999px" }}></div>
+      <div
+        id="print-area"
+        style={{ position: "absolute", left: "-9999px", top: "-9999px" }}
+      ></div>
     </div>
   );
 }
@@ -2140,7 +2282,7 @@ function RecordsPage({
       record.columns.forEach((col) => {
         col.substituteTeacher.forEach((sub) => {
           if (sub && sub.trim() !== "") {
-            counts[sub] = (counts[sub] || 0) + 1;
+            counts[sub.trim()] = (counts[sub.trim()] || 0) + 1;
           }
         });
       });
@@ -2149,6 +2291,112 @@ function RecordsPage({
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count);
   }, [filteredRecords]);
+
+  const parseINDate = (dateString: string) => {
+    const parts = dateString.split("/").map((p) => Number(p));
+    if (parts.length !== 3) return null;
+    return new Date(parts[2], parts[1] - 1, parts[0]);
+  };
+
+  const formatExportHeader = (dateString: string) => {
+    const date = parseINDate(dateString);
+    if (!date || Number.isNaN(date.getTime())) return dateString;
+    const day = date.getDate();
+    const month = date.getMonth() + 1;
+    const year = String(date.getFullYear()).slice(-2);
+    const weekday = new Intl.DateTimeFormat("en-US", {
+      weekday: "short",
+    }).format(date);
+    return `${day}.${month}.${year} ${weekday}`;
+  };
+
+  const escapeCsv = (value: string | number) => {
+    const str = String(value ?? "");
+    if (/[,\n"]/g.test(str)) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const handleExportMonthlyReport = () => {
+    if (filteredRecords.length === 0) {
+      alert("No records available to export.");
+      return;
+    }
+
+    const uniqueDates = Array.from(
+      new Set(filteredRecords.map((record) => record.date)),
+    ).sort((a, b) => {
+      const da = parseINDate(a);
+      const db = parseINDate(b);
+      if (!da || !db) return a.localeCompare(b);
+      return da.getTime() - db.getTime();
+    });
+
+    const teacherNames = Array.from(
+      filteredRecords.reduce((set, record) => {
+        record.columns.forEach((col) => {
+          col.substituteTeacher.forEach((sub) => {
+            const name = sub?.trim();
+            if (name) set.add(name);
+          });
+        });
+        return set;
+      }, new Set<string>()),
+    ).sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+
+    const countsByTeacher: Record<string, Record<string, number>> = {};
+    teacherNames.forEach((name) => {
+      countsByTeacher[name] = {};
+      uniqueDates.forEach((date) => {
+        countsByTeacher[name][date] = 0;
+      });
+    });
+
+    filteredRecords.forEach((record) => {
+      record.columns.forEach((col) => {
+        col.substituteTeacher.forEach((sub) => {
+          const name = sub?.trim();
+          if (!name) return;
+          countsByTeacher[name] = countsByTeacher[name] || {};
+          countsByTeacher[name][record.date] =
+            (countsByTeacher[name][record.date] || 0) + 1;
+        });
+      });
+    });
+
+    const headers = [
+      "SR.No",
+      "Name",
+      "Load",
+      ...uniqueDates.map(formatExportHeader),
+      "Total",
+    ];
+    const rows = teacherNames.map((name, idx) => {
+      const dailyCounts = uniqueDates.map(
+        (date) => countsByTeacher[name][date] ?? 0,
+      );
+      const total = dailyCounts.reduce((sum, value) => sum + value, 0);
+      return [idx + 1, name, total, ...dailyCounts, total];
+    });
+
+    const csv = [headers, ...rows]
+      .map((row) => row.map((value) => escapeCsv(value)).join(","))
+      .join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute(
+      "download",
+      `Adjustment_Monthly_Report_${new Date().toISOString().slice(0, 10)}.csv`,
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-4">
@@ -2171,12 +2419,25 @@ function RecordsPage({
             <div className="text-sm opacity-90">Total Adjustments Made</div>
           </div>
         </div>
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex gap-2 flex-wrap">
           <button
-            onClick={() => onPrintAnalytics(`Adjustment Report - ${filterView.toUpperCase()}`, activeTab === "list" ? "analytics-list-content" : "analytics-stats-content")}
+            onClick={() =>
+              onPrintAnalytics(
+                `Adjustment Report - ${filterView.toUpperCase()}`,
+                activeTab === "list"
+                  ? "analytics-list-content"
+                  : "analytics-stats-content",
+              )
+            }
             className="bg-white text-blue-700 px-6 py-2 rounded-lg font-bold hover:bg-blue-50 transition flex items-center gap-2"
           >
             🖨️ Print Analytic Report (${filterView.toUpperCase()})
+          </button>
+          <button
+            onClick={handleExportMonthlyReport}
+            className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-emerald-700 transition flex items-center gap-2"
+          >
+            📥 Download Excel Report
           </button>
         </div>
       </div>
@@ -2306,7 +2567,7 @@ function RecordsPage({
                         🖨️ Print
                       </button>
                       <button
-                        onClick={() => onDelete(record.id)}
+                        onClick={() => onDelete(record.id || record.date)}
                         className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-red-700 transition"
                       >
                         🗑️
@@ -2357,8 +2618,8 @@ function RecordsPage({
                               record.columns
                                 .filter((c) => c.selectedTeacher)
                                 .map((col) => {
-                                  const rowsForTeacher = periods.map(
-                                    (period, pIdx) => {
+                                  const rowsForTeacher = periods
+                                    .map((period, pIdx) => {
                                       const cv = col.classValues[pIdx];
                                       const sub = col.substituteTeacher[pIdx];
                                       const isFree =
@@ -2408,8 +2669,8 @@ function RecordsPage({
                                           </td>
                                         </tr>
                                       );
-                                    },
-                                  ).filter(Boolean);
+                                    })
+                                    .filter(Boolean);
 
                                   if (rowsForTeacher.length === 0) {
                                     return (
@@ -2452,7 +2713,10 @@ function RecordsPage({
 
       {/* ── TAB 2: TEACHER ANALYTICS / LEADERBOARD ── */}
       {activeTab === "stats" && (
-        <div id="analytics-stats-content" className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <div
+          id="analytics-stats-content"
+          className="bg-white rounded-xl shadow-sm border border-slate-200 p-6"
+        >
           <div className="flex items-center justify-between mb-6 border-b pb-4">
             <div>
               <h2 className="text-xl font-bold text-slate-800">

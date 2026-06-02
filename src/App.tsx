@@ -2333,6 +2333,22 @@ function RecordsPage({
       return da.getTime() - db.getTime();
     });
 
+    // Is week (last 7 days) ke records — Load column ke liye
+    const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const weeklyRecords = records.filter((r) => r.timestamp >= weekStart);
+
+    // Weekly load per teacher calculate karo
+    const weeklyLoadByTeacher: Record<string, number> = {};
+    weeklyRecords.forEach((record) => {
+      record.columns.forEach((col) => {
+        col.substituteTeacher.forEach((sub) => {
+          const name = sub?.trim();
+          if (!name) return;
+          weeklyLoadByTeacher[name] = (weeklyLoadByTeacher[name] || 0) + 1;
+        });
+      });
+    });
+
     const teacherNames = Array.from(
       filteredRecords.reduce((set, record) => {
         record.columns.forEach((col) => {
@@ -2365,10 +2381,15 @@ function RecordsPage({
       });
     });
 
+    // Get week range label for header
+    const weekEndDate = new Date();
+    const weekStartDate = new Date(weekStart);
+    const weekLabel = `Week Load (${weekStartDate.getDate()}/${weekStartDate.getMonth() + 1} - ${weekEndDate.getDate()}/${weekEndDate.getMonth() + 1})`;
+
     const headers = [
       "SR.No",
       "Name",
-      "Load",
+      weekLabel,
       ...uniqueDates.map(formatExportHeader),
       "Total",
     ];
@@ -2377,7 +2398,9 @@ function RecordsPage({
         (date) => countsByTeacher[name][date] ?? 0,
       );
       const total = dailyCounts.reduce((sum, value) => sum + value, 0);
-      return [idx + 1, name, total, ...dailyCounts, total];
+      // Load = is week ka total substitute count (all records se, sirf last 7 days)
+      const weeklyLoad = weeklyLoadByTeacher[name] || 0;
+      return [idx + 1, name, weeklyLoad, ...dailyCounts, total];
     });
 
     const csv = [headers, ...rows]

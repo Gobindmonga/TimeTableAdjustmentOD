@@ -472,6 +472,8 @@ export default function App() {
   const isAutoSyncRef = useRef(false);
   // isSavingRef: true jab local change pending ho ya save ho raha ho — poller ko DB se overwrite karne se rokta hai
   const isSavingRef = useRef(false);
+  const [dbFetchCompleted, setDbFetchCompleted] = useState(false);
+  const lastSyncedColumnsRef = useRef<Column[] | null>(null);
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -499,20 +501,37 @@ export default function App() {
         const todayRecord = json.data.find(
           (r: AdjustmentRecord) => r.date === date,
         );
-        if (todayRecord && !isSavingRef.current) {
-          setColumns((prevCols) => {
-            const dbColsStr = JSON.stringify(todayRecord.columns);
-            const prevColsStr = JSON.stringify(prevCols);
-            if (dbColsStr !== prevColsStr) {
-              isAutoSyncRef.current = true;
-              return JSON.parse(dbColsStr);
+        if (todayRecord) {
+          if (!isSavingRef.current) {
+            setColumns((prevCols) => {
+              const dbColsStr = JSON.stringify(todayRecord.columns);
+              const prevColsStr = JSON.stringify(prevCols);
+              if (dbColsStr !== prevColsStr) {
+                isAutoSyncRef.current = true;
+                return JSON.parse(dbColsStr);
+              }
+              return prevCols;
+            });
+            if (selectedDay !== todayRecord.day) {
+              setSelectedDay(todayRecord.day);
             }
-            return prevCols;
-          });
-          if (selectedDay !== todayRecord.day) {
-            setSelectedDay(todayRecord.day);
+          }
+          lastSyncedColumnsRef.current = JSON.parse(JSON.stringify(todayRecord.columns));
+        } else {
+          // If no record exists for today in DB, initialize the ref to the default empty state
+          // so it matches the initial empty state of the app
+          if (lastSyncedColumnsRef.current === null) {
+            lastSyncedColumnsRef.current = [
+              {
+                id: 1,
+                selectedTeacher: "",
+                substituteTeacher: Array(9).fill(""),
+                classValues: Array(9).fill(""),
+              },
+            ];
           }
         }
+        setDbFetchCompleted(true);
       }
     } catch (err) {
       console.error("Failed to load records from DB:", err);
@@ -520,6 +539,8 @@ export default function App() {
   };
 
   useEffect(() => {
+    setDbFetchCompleted(false);
+    lastSyncedColumnsRef.current = null;
     fetchRecordsFromDB();
     const intervalId = setInterval(fetchRecordsFromDB, 5000);
     return () => clearInterval(intervalId);
@@ -527,10 +548,17 @@ export default function App() {
 
   // ── Auto-Save to Database ─────────────────────────────────────────────
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !dbFetchCompleted) return;
 
     if (isAutoSyncRef.current) {
       isAutoSyncRef.current = false;
+      return;
+    }
+
+    // Check if columns have actually changed since last sync
+    const currentColsStr = JSON.stringify(columns);
+    const lastSyncedColsStr = JSON.stringify(lastSyncedColumnsRef.current);
+    if (currentColsStr === lastSyncedColsStr) {
       return;
     }
 
@@ -546,7 +574,7 @@ export default function App() {
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [columns, date, selectedDay, loaded]);
+  }, [columns, date, selectedDay, loaded, dbFetchCompleted]);
 
   // ── Manual Save to Database ─────────────────────────────────────────────
   const handleSaveToDatabase = async (isAutoSave = false) => {
@@ -582,6 +610,7 @@ export default function App() {
         setSaveStatus("saved");
         setSyncStatus("connected");
         isSavingRef.current = false; // Save complete — poller ab sync kar sakta hai
+        lastSyncedColumnsRef.current = JSON.parse(JSON.stringify(columns));
         fetchRecordsFromDB(); // Refresh records
         setTimeout(() => setSaveStatus("idle"), 3000);
         if (!isAutoSave) {
@@ -752,6 +781,7 @@ export default function App() {
     setDate(record.date);
     setSelectedDay(record.day);
     setColumns(JSON.parse(JSON.stringify(record.columns)));
+    lastSyncedColumnsRef.current = JSON.parse(JSON.stringify(record.columns));
     setCurrentPage("home");
     alert("✅ Record loaded successfully!");
   };

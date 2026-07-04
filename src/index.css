@@ -163,8 +163,8 @@
     line-height: 1.1;
   }
   #print-area thead th {
-    background: #1e293b !important;
-    color: white !important;
+    background: #e2e8f0 !important;
+    color: #1e293b !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
     padding: 2px 2px;

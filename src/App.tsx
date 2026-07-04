@@ -308,6 +308,7 @@ function buildPrintHTML(
   schoolInfo: SchoolInfo,
   periods: { label: string; time: string }[],
   majorBreak: { start: string; end: string },
+  teachers: Teacher[],
 ) {
   const totalCols = columns.length;
   // Adjusted width calculation: limit width for single/few teachers to prevent covering entire page
@@ -337,19 +338,19 @@ function buildPrintHTML(
 
   const theadHTML = `
     <tr>
-      <th colspan="3" rowspan="2" style="width:18%;text-align:center;vertical-align:middle;font-size:11px;letter-spacing:0.5px;">Period / Time</th>
-      <th colspan="${totalCols}" style="text-align:center;font-size:14px;letter-spacing:2px;font-weight:900;background:#1e293b;border-bottom:2px solid #475569!important;">TEACHERS ON LEAVE</th>
+      <th colspan="3" rowspan="2" style="width:18%;text-align:center;vertical-align:middle;font-size:11px;letter-spacing:0.5px;background:#e2e8f0!important;color:#1e293b!important;">Period / Time</th>
+      <th colspan="${totalCols}" style="text-align:center;font-size:14px;letter-spacing:2px;font-weight:900;background:#e2e8f0!important;color:#1e293b!important;border-bottom:2px solid #cbd5e1!important;">TEACHERS ON LEAVE</th>
     </tr>
     <tr>
       ${columns
-        .map(
-          (col) => `
-        <th style="width:${teacherW}%;background:#1e3a5f;padding:3px 2px!important;">
-          <div style="font-size:12px;font-weight:800;color:white;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
-          <div style="font-size:9px;font-weight:400;color:#93c5fd;margin-top:1px;">${selectedDay}</div>
+      .map(
+        (col) => `
+        <th style="width:${teacherW}%;background:#e2e8f0!important;color:#1e293b!important;padding:3px 2px!important;border:1px solid #94a3b8!important;">
+          <div style="font-size:12px;font-weight:800;color:#1e293b;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
+          <div style="font-size:9px;font-weight:400;color:#475569;margin-top:1px;">${selectedDay}</div>
         </th>`,
-        )
-        .join("")}
+      )
+      .join("")}
     </tr>`;
 
   let tbodyHTML = "";
@@ -377,7 +378,17 @@ function buildPrintHTML(
             ? cv.trim() === "" || cv.trim().toLowerCase() === "free"
             : true;
           const sub = col.substituteTeacher[pIdx] || "";
-          return `<td style="text-align:center;">${isFree ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}</span>`}</td>`;
+          const teacherObj = teachers.find((t) => t.name === sub);
+          const freeText = (() => {
+            if (!teacherObj) return "";
+            const { before, after } = getFreePeriodCounts(
+              teacherObj,
+              selectedDay,
+              periods.length,
+            );
+            return ` (${before},${after})`;
+          })();
+          return `<td style="text-align:center;">${isFree ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}${freeText}</span>`}</td>`;
         })
         .join("")}
     </tr>`;
@@ -407,7 +418,7 @@ function buildPrintHTML(
 export default function App() {
   const [currentPage, setCurrentPage] = useState<"home" | "records">("home");
   // ── Teacher column pagination ──────────────────────────────────────────────
-  const TEACHERS_PER_PAGE = 5;
+  const TEACHERS_PER_PAGE = 4;
   const [tablePageIdx, setTablePageIdx] = useState(0);
 
   const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() =>
@@ -639,6 +650,7 @@ export default function App() {
       schoolInfo,
       PERIODS,
       timings.majorBreak,
+      teachers,
     );
   }, [
     columns,
@@ -648,6 +660,7 @@ export default function App() {
     schoolInfo,
     PERIODS,
     timings.majorBreak,
+    teachers,
   ]);
 
   // ── Logo handlers ──────────────────────────────────────────────────────────
@@ -884,7 +897,7 @@ export default function App() {
       tbody { height: 100%; }
       tbody tr { height: 1px; }
       th, td { border: 0.5px solid #94a3b8; padding: 2px 3px; vertical-align: middle; line-height: 1.15; overflow: hidden; }
-      thead th { background: #1e293b !important; color: white !important; padding: 3px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      thead th { background: #e2e8f0 !important; color: #1e293b !important; padding: 3px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
       .period-cell { background: #e2e8f0 !important; color: #1e293b !important; text-align: center; vertical-align: middle; padding: 1px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .p-label { font-size: 12px; font-weight: 800; color: #1e293b; display: block; }
@@ -907,7 +920,7 @@ export default function App() {
     const pages = chunks
       .map(
         (chunk) =>
-          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak)}</div>`,
+          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak, teachers)}</div>`,
       )
       .join("\n");
 
@@ -2201,6 +2214,7 @@ export default function App() {
             onPrint={handlePrintRecord}
             onPrintAnalytics={handlePrintAnalyticReport}
             periods={PERIODS}
+            teachers={teachers}
           />
         )}
       </div>
@@ -2220,6 +2234,7 @@ function RecordsPage({
   onPrint,
   onPrintAnalytics,
   periods,
+  teachers,
 }: {
   records: AdjustmentRecord[];
   onDelete: (id: string) => void;
@@ -2227,6 +2242,7 @@ function RecordsPage({
   onPrint: (record: AdjustmentRecord) => void;
   onPrintAnalytics: (title: string, contentId: string) => void;
   periods: { label: string; time: string }[];
+  teachers: Teacher[];
 }) {
   const [filterView, setFilterView] = useState<
     "all" | "day" | "week" | "month"
@@ -2680,11 +2696,23 @@ function RecordsPage({
                                             {cv}
                                           </td>
                                           <td className="p-3 border border-slate-200">
-                                            {sub ? (
-                                              <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-bold border border-green-300 inline-block">
-                                                {sub}
-                                              </span>
-                                            ) : (
+                                            {sub ? (() => {
+                                              const teacherObj = teachers.find((t) => t.name === sub);
+                                              const freeText = (() => {
+                                                if (!teacherObj) return "";
+                                                const { before, after } = getFreePeriodCounts(
+                                                  teacherObj,
+                                                  record.day,
+                                                  periods.length,
+                                                );
+                                                return ` (${before},${after})`;
+                                              })();
+                                              return (
+                                                <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full font-bold border border-green-300 inline-block">
+                                                  {sub}{freeText}
+                                                </span>
+                                              );
+                                            })() : (
                                               <span className="text-orange-500 italic font-semibold">
                                                 ⚠️ Pending / No Sub
                                               </span>

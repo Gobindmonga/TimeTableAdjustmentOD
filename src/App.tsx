@@ -8,15 +8,6 @@ import React, {
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
 import defaultSchoolLogo from "./GITA_NIKETAN_AWASIYA_VIDYALAYA-logo.png";
-import {
-  isFirebaseConfigured,
-  saveCurrentAdjustment,
-  subscribeToCurrentAdjustment,
-  saveAdjustmentRecord,
-  subscribeToRecords,
-  deleteAdjustmentRecord,
-  type CurrentAdjustment,
-} from "./firebase";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const isLocalHost =
@@ -75,11 +66,82 @@ interface SchoolInfo {
   logoUrl: string;
 }
 
+type LeaveType = "full" | "half-morning" | "half-afternoon";
+
 interface Column {
   id: number;
   selectedTeacher: string;
+  /** Full day, or half-day (morning = periods before major break, afternoon = after). */
+  leaveType: LeaveType;
   substituteTeacher: string[];
   classValues: string[];
+}
+
+const LEAVE_TYPE_OPTIONS: { value: LeaveType; label: string }[] = [
+  { value: "full", label: "Full Day Leave" },
+  { value: "half-morning", label: "Half-Day Leave (Morning)" },
+  { value: "half-afternoon", label: "Half-Day Leave (Afternoon)" },
+];
+
+function normalizeLeaveType(value: unknown): LeaveType {
+  if (value === "half-morning" || value === "half-afternoon") return value;
+  return "full";
+}
+
+function leaveTypeLabel(leaveType: LeaveType | undefined): string {
+  const t = normalizeLeaveType(leaveType);
+  return LEAVE_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? "Full Day Leave";
+}
+
+function isPeriodInLeaveDuration(
+  leaveType: LeaveType | undefined,
+  periodIdx: number,
+): boolean {
+  const t = normalizeLeaveType(leaveType);
+  if (t === "half-morning") return periodIdx <= BREAK_AFTER_IDX;
+  if (t === "half-afternoon") return periodIdx > BREAK_AFTER_IDX;
+  return true;
+}
+
+function isClassSlotFree(classVal: string | undefined): boolean {
+  const v = (classVal ?? "").trim();
+  return v === "" || v.toLowerCase() === "free";
+}
+
+/** Period needs a substitute: assigned class during the teacher's leave window. */
+function needsPeriodAdjustment(col: Column, periodIdx: number): boolean {
+  if (!col.selectedTeacher) return false;
+  if (!isPeriodInLeaveDuration(col.leaveType, periodIdx)) return false;
+  return !isClassSlotFree(col.classValues[periodIdx]);
+}
+
+function emptyColumn(id: number): Column {
+  return {
+    id,
+    selectedTeacher: "",
+    leaveType: "full",
+    substituteTeacher: Array(9).fill(""),
+    classValues: Array(9).fill(""),
+  };
+}
+
+function normalizeColumn(col: Partial<Column> & { id: number }): Column {
+  return {
+    id: col.id,
+    selectedTeacher: col.selectedTeacher ?? "",
+    leaveType: normalizeLeaveType(col.leaveType),
+    substituteTeacher: Array.isArray(col.substituteTeacher)
+      ? [...col.substituteTeacher]
+      : Array(9).fill(""),
+    classValues: Array.isArray(col.classValues)
+      ? [...col.classValues]
+      : Array(9).fill(""),
+  };
+}
+
+function normalizeColumns(cols: Column[] | undefined | null): Column[] {
+  if (!Array.isArray(cols) || cols.length === 0) return [emptyColumn(1)];
+  return cols.map((c) => normalizeColumn(c));
 }
 
 interface Teacher {
@@ -258,6 +320,57 @@ function isPeriodFree(teacher: Teacher, day: string, idx: number) {
   return v === "" || v.toLowerCase() === "free" || v === "—" || v === "-";
 }
 
+/** How many assigned (non-free) classes a teacher has on one weekday. */
+function countAssignedClassesOnDay(teacher: Teacher, day: string): number {
+  const periods = teacher.schedule[day] ?? [];
+  let n = 0;
+  for (let i = 0; i < periods.length; i++) {
+    if (!isPeriodFree(teacher, day, i)) n++;
+  }
+  return n;
+}
+
+/** Weekly timetable class load (Mon–Sat assigned periods). */
+function getWeeklyClassLoad(teacher: Teacher): number {
+  return DAYS.reduce(
+    (sum, day) => sum + countAssignedClassesOnDay(teacher, day),
+    0,
+  );
+}
+
+function dayNameFromDate(date: Date): string {
+  return [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ][date.getDay()];
+}
+
+/** Sum of assigned timetable classes across every school day in [start, end]. */
+function getClassLoadInDateRange(
+  teacher: Teacher,
+  start: Date,
+  end: Date,
+): number {
+  let total = 0;
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  const last = new Date(end);
+  last.setHours(0, 0, 0, 0);
+  while (cursor <= last) {
+    const dayName = dayNameFromDate(cursor);
+    if (DAYS.includes(dayName)) {
+      total += countAssignedClassesOnDay(teacher, dayName);
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return total;
+}
+
 function getFreePeriodCounts(
   teacher: Teacher,
   day: string,
@@ -272,6 +385,91 @@ function getFreePeriodCounts(
   return { before, after };
 }
 
+/** Periods where this teacher is already covering a leave class today. */
+function getAssignedSubPeriods(
+  columns: Column[],
+  teacherName: string,
+  exclude?: { colId: number; periodIdx: number },
+): Set<number> {
+  const set = new Set<number>();
+  for (const col of columns) {
+    for (let i = 0; i < col.substituteTeacher.length; i++) {
+      if (
+        exclude &&
+        col.id === exclude.colId &&
+        i === exclude.periodIdx
+      )
+        continue;
+      if (!isPeriodInLeaveDuration(col.leaveType, i)) continue;
+      if ((col.substituteTeacher[i] ?? "").trim() === teacherName) set.add(i);
+    }
+  }
+  return set;
+}
+
+/** Free-period counts after subtracting periods already used for adjustments. */
+function getEffectiveFreePeriodCounts(
+  teacher: Teacher,
+  day: string,
+  periodsLength: number,
+  assignedPeriods: Set<number>,
+) {
+  let before = 0,
+    after = 0;
+  for (let i = 0; i <= BREAK_AFTER_IDX; i++) {
+    if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) before++;
+  }
+  for (let i = BREAK_AFTER_IDX + 1; i < periodsLength - 1; i++) {
+    if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) after++;
+  }
+  return { before, after };
+}
+
+function countTeacherAdjustmentLoad(
+  columns: Column[],
+  teacherName: string,
+  exclude?: { colId: number; periodIdx: number },
+): number {
+  let n = 0;
+  for (const col of columns) {
+    for (let i = 0; i < col.substituteTeacher.length; i++) {
+      if (
+        exclude &&
+        col.id === exclude.colId &&
+        i === exclude.periodIdx
+      )
+        continue;
+      if (!isPeriodInLeaveDuration(col.leaveType, i)) continue;
+      if ((col.substituteTeacher[i] ?? "").trim() === teacherName) n++;
+    }
+  }
+  return n;
+}
+
+/**
+ * Recent (7-day) adjustment load from saved records.
+ * Optionally skip a date (usually today) so live columns are not double-counted.
+ */
+function buildPriorLoadMap(
+  records: AdjustmentRecord[],
+  excludeDate?: string,
+): Record<string, number> {
+  const map: Record<string, number> = {};
+  const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  for (const record of records) {
+    if (excludeDate && record.date === excludeDate) continue;
+    if (record.timestamp && record.timestamp < weekStart) continue;
+    for (const col of record.columns) {
+      col.substituteTeacher.forEach((sub, i) => {
+        const name = (sub ?? "").trim();
+        if (!name || !isPeriodInLeaveDuration(col.leaveType, i)) return;
+        map[name] = (map[name] || 0) + 1;
+      });
+    }
+  }
+  return map;
+}
+
 function getAvailableSubstitutes(
   teachers: Teacher[],
   columns: Column[],
@@ -279,14 +477,26 @@ function getAvailableSubstitutes(
   periodIdx: number,
   day: string,
   periodsLength: number,
+  priorLoadByTeacher: Record<string, number> = {},
 ) {
-  const absent = new Set(columns.map((c) => c.selectedTeacher).filter(Boolean));
+  // Half-day leave teachers are only "absent" during their leave window.
+  const absent = new Set(
+    columns
+      .filter(
+        (c) =>
+          c.selectedTeacher &&
+          isPeriodInLeaveDuration(c.leaveType, periodIdx),
+      )
+      .map((c) => c.selectedTeacher),
+  );
   const alreadySub = new Set(
     columns
       .filter((c) => c.id !== currentColId)
       .map((c) => c.substituteTeacher[periodIdx])
       .filter(Boolean),
   );
+  const exclude = { colId: currentColId, periodIdx };
+
   return teachers
     .filter(
       (t) =>
@@ -295,8 +505,32 @@ function getAvailableSubstitutes(
         isPeriodFree(t, day, periodIdx),
     )
     .map((t) => {
-      const { before, after } = getFreePeriodCounts(t, day, periodsLength);
-      return { ...t, freeBefore: before, freeAfter: after };
+      const assigned = getAssignedSubPeriods(columns, t.name, exclude);
+      const { before, after } = getEffectiveFreePeriodCounts(
+        t,
+        day,
+        periodsLength,
+        assigned,
+      );
+      const todayLoad = countTeacherAdjustmentLoad(columns, t.name, exclude);
+      const adjLoad = todayLoad + (priorLoadByTeacher[t.name] || 0);
+      return {
+        ...t,
+        freeBefore: before,
+        freeAfter: after,
+        todayLoad,
+        adjLoad,
+      };
+    })
+    .sort((a, b) => {
+      // Fair distribution: teachers with fewer adjustments rise to the top.
+      if (a.adjLoad !== b.adjLoad) return a.adjLoad - b.adjLoad;
+      const aFree =
+        periodIdx <= BREAK_AFTER_IDX ? a.freeBefore : a.freeAfter;
+      const bFree =
+        periodIdx <= BREAK_AFTER_IDX ? b.freeBefore : b.freeAfter;
+      if (bFree !== aFree) return bFree - aFree;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
     });
 }
 
@@ -347,7 +581,7 @@ function buildPrintHTML(
         (col) => `
         <th style="width:${teacherW}%;background:#e2e8f0!important;color:#1e293b!important;padding:3px 2px!important;border:1px solid #94a3b8!important;">
           <div style="font-size:12px;font-weight:800;color:#1e293b;line-height:1.1;">${col.selectedTeacher || "— Not Selected —"}</div>
-          <div style="font-size:9px;font-weight:400;color:#475569;margin-top:1px;">${selectedDay}</div>
+          <div style="font-size:9px;font-weight:400;color:#475569;margin-top:1px;">${selectedDay}${col.selectedTeacher ? ` · ${leaveTypeLabel(col.leaveType)}` : ""}</div>
         </th>`,
       )
       .join("")}
@@ -362,9 +596,14 @@ function buildPrintHTML(
       ${columns
         .map((col) => {
           const cv = col.classValues[pIdx] ?? "";
+          const inLeave = isPeriodInLeaveDuration(col.leaveType, pIdx);
           const isFree =
             col.selectedTeacher &&
-            (cv.trim() === "" || cv.trim().toLowerCase() === "free");
+            (isClassSlotFree(cv) || !inLeave);
+          // Outside half-day leave window the teacher is present — still show class.
+          if (col.selectedTeacher && !inLeave && !isClassSlotFree(cv)) {
+            return `<td style="width:${teacherW}%;text-align:center;"><span class="val-class">${cv}</span></td>`;
+          }
           return `<td style="width:${teacherW}%;text-align:center;">${isFree ? `<span class="val-free">Free</span>` : `<span class="val-class">${cv || ""}</span>`}</td>`;
         })
         .join("")}
@@ -374,21 +613,31 @@ function buildPrintHTML(
       ${columns
         .map((col) => {
           const cv = col.classValues[pIdx] ?? "";
-          const isFree = col.selectedTeacher
-            ? cv.trim() === "" || cv.trim().toLowerCase() === "free"
-            : true;
+          const inLeave = isPeriodInLeaveDuration(col.leaveType, pIdx);
+          const needsAdj = needsPeriodAdjustment(col, pIdx);
+          if (!col.selectedTeacher || isClassSlotFree(cv)) {
+            return `<td style="text-align:center;"><span class="val-free"></span></td>`;
+          }
+          if (!inLeave) {
+            return `<td style="text-align:center;"><span class="val-free">Present</span></td>`;
+          }
           const sub = col.substituteTeacher[pIdx] || "";
           const teacherObj = teachers.find((t) => t.name === sub);
           const freeText = (() => {
             if (!teacherObj) return "";
-            const { before, after } = getFreePeriodCounts(
+            const assigned = getAssignedSubPeriods(columns, sub, {
+              colId: col.id,
+              periodIdx: pIdx,
+            });
+            const { before, after } = getEffectiveFreePeriodCounts(
               teacherObj,
               selectedDay,
               periods.length,
+              assigned,
             );
             return ` (${before},${after})`;
           })();
-          return `<td style="text-align:center;">${isFree ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}${freeText}</span>`}</td>`;
+          return `<td style="text-align:center;">${!needsAdj ? `<span class="val-free"></span>` : `<span class="val-sub">${sub}${freeText}</span>`}</td>`;
         })
         .join("")}
     </tr>`;
@@ -450,14 +699,7 @@ export default function App() {
       year: "numeric",
     }),
   );
-  const [columns, setColumns] = useState<Column[]>([
-    {
-      id: 1,
-      selectedTeacher: "",
-      substituteTeacher: Array(9).fill(""),
-      classValues: Array(9).fill(""),
-    },
-  ]);
+  const [columns, setColumns] = useState<Column[]>([emptyColumn(1)]);
 
   const [records, setRecords] = useState<AdjustmentRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">(
@@ -474,6 +716,12 @@ export default function App() {
   const isSavingRef = useRef(false);
   const [dbFetchCompleted, setDbFetchCompleted] = useState(false);
   const lastSyncedColumnsRef = useRef<Column[] | null>(null);
+
+  // Recent-week adjustment load (excludes today — today's live columns are counted separately).
+  const priorAdjustmentLoad = useMemo(
+    () => buildPriorLoadMap(records, date),
+    [records, date],
+  );
 
   // ── Persist basic states (always keep local copy as fallback) ─────────────
   useEffect(() => {
@@ -493,6 +741,7 @@ export default function App() {
           json.data.map((r: AdjustmentRecord) => ({
             ...r,
             id: r.id || r.date,
+            columns: normalizeColumns(r.columns),
           })),
         );
 
@@ -504,11 +753,12 @@ export default function App() {
         if (todayRecord) {
           if (!isSavingRef.current) {
             setColumns((prevCols) => {
-              const dbColsStr = JSON.stringify(todayRecord.columns);
+              const normalized = normalizeColumns(todayRecord.columns);
+              const dbColsStr = JSON.stringify(normalized);
               const prevColsStr = JSON.stringify(prevCols);
               if (dbColsStr !== prevColsStr) {
                 isAutoSyncRef.current = true;
-                return JSON.parse(dbColsStr);
+                return normalized;
               }
               return prevCols;
             });
@@ -516,19 +766,12 @@ export default function App() {
               setSelectedDay(todayRecord.day);
             }
           }
-          lastSyncedColumnsRef.current = JSON.parse(JSON.stringify(todayRecord.columns));
+          lastSyncedColumnsRef.current = normalizeColumns(todayRecord.columns);
         } else {
           // If no record exists for today in DB, initialize the ref to the default empty state
           // so it matches the initial empty state of the app
           if (lastSyncedColumnsRef.current === null) {
-            lastSyncedColumnsRef.current = [
-              {
-                id: 1,
-                selectedTeacher: "",
-                substituteTeacher: Array(9).fill(""),
-                classValues: Array(9).fill(""),
-              },
-            ];
+            lastSyncedColumnsRef.current = [emptyColumn(1)];
           }
         }
         setDbFetchCompleted(true);
@@ -585,7 +828,8 @@ export default function App() {
       let totalSubs = 0;
       columns.forEach((col) => {
         totalSubs += col.substituteTeacher.filter(
-          (s) => s.trim() !== "",
+          (s, i) =>
+            s.trim() !== "" && isPeriodInLeaveDuration(col.leaveType, i),
         ).length;
       });
 
@@ -594,7 +838,7 @@ export default function App() {
         date,
         day: selectedDay,
         timestamp: Date.now(),
-        columns: JSON.parse(JSON.stringify(columns)),
+        columns: normalizeColumns(columns),
         totalTeachers: columns.filter((c) => c.selectedTeacher).length,
         totalSubstitutes: totalSubs,
       };
@@ -729,14 +973,7 @@ export default function App() {
       )
     )
       return;
-    setColumns([
-      {
-        id: 1,
-        selectedTeacher: "",
-        substituteTeacher: Array(9).fill(""),
-        classValues: Array(9).fill(""),
-      },
-    ]);
+    setColumns([emptyColumn(1)]);
     setDate(
       new Date().toLocaleDateString("en-IN", {
         day: "2-digit",
@@ -780,8 +1017,8 @@ export default function App() {
       return;
     setDate(record.date);
     setSelectedDay(record.day);
-    setColumns(JSON.parse(JSON.stringify(record.columns)));
-    lastSyncedColumnsRef.current = JSON.parse(JSON.stringify(record.columns));
+    setColumns(normalizeColumns(record.columns));
+    lastSyncedColumnsRef.current = normalizeColumns(record.columns);
     setCurrentPage("home");
     alert("✅ Record loaded successfully!");
   };
@@ -815,11 +1052,25 @@ export default function App() {
         return {
           ...col,
           selectedTeacher: name,
+          leaveType: col.leaveType || "full",
           classValues: Array(9)
             .fill("")
             .map((_, i) => ds[i] ?? ""),
           substituteTeacher: Array(9).fill(""),
         };
+      }),
+    );
+
+  const handleLeaveTypeChange = (colId: number, leaveType: LeaveType) =>
+    setColumns((prev) =>
+      prev.map((col) => {
+        if (col.id !== colId) return col;
+        // Clear substitutes outside the new leave window so only leave-duration
+        // periods remain in the adjustment.
+        const substituteTeacher = col.substituteTeacher.map((s, i) =>
+          isPeriodInLeaveDuration(leaveType, i) ? s : "",
+        );
+        return { ...col, leaveType, substituteTeacher };
       }),
     );
 
@@ -863,15 +1114,7 @@ export default function App() {
 
   const addColumn = () => {
     const nextId = Math.max(...columns.map((c) => c.id)) + 1;
-    setColumns((prev) => [
-      ...prev,
-      {
-        id: nextId,
-        selectedTeacher: "",
-        substituteTeacher: Array(9).fill(""),
-        classValues: Array(9).fill(""),
-      },
-    ]);
+    setColumns((prev) => [...prev, emptyColumn(nextId)]);
   };
 
   const removeColumn = (colId: number) => {
@@ -1857,7 +2100,8 @@ export default function App() {
                                           color: "#64748b",
                                         }}
                                       >
-                                        {selectedDay}
+                                        {selectedDay} ·{" "}
+                                        {leaveTypeLabel(col.leaveType)}
                                       </div>
                                     )}
                                   </div>
@@ -1901,6 +2145,24 @@ export default function App() {
                                   {teachers.map((t) => (
                                     <option key={t.name} value={t.name}>
                                       {t.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={normalizeLeaveType(col.leaveType)}
+                                  onChange={(e) =>
+                                    handleLeaveTypeChange(
+                                      col.id,
+                                      e.target.value as LeaveType,
+                                    )
+                                  }
+                                  disabled={!col.selectedTeacher}
+                                  style={{ fontSize: "12px", marginTop: "6px" }}
+                                  className="w-full border border-amber-300 rounded-md px-1 py-1 bg-amber-50 text-amber-900 font-semibold focus:outline-none disabled:opacity-50"
+                                >
+                                  {LEAVE_TYPE_OPTIONS.map((o) => (
+                                    <option key={o.value} value={o.value}>
+                                      {o.label}
                                     </option>
                                   ))}
                                 </select>
@@ -1966,10 +2228,13 @@ export default function App() {
                                 </td>
                                 {visibleColumns.map((col) => {
                                   const classVal = col.classValues[pIdx] ?? "";
+                                  const inLeave = isPeriodInLeaveDuration(
+                                    col.leaveType,
+                                    pIdx,
+                                  );
                                   const isFree =
                                     col.selectedTeacher &&
-                                    (classVal.trim() === "" ||
-                                      classVal.trim().toLowerCase() === "free");
+                                    isClassSlotFree(classVal);
                                   return (
                                     <td
                                       key={col.id}
@@ -1983,22 +2248,34 @@ export default function App() {
                                           Free
                                         </div>
                                       ) : (
-                                        <input
-                                          type="text"
-                                          value={classVal}
-                                          onChange={(e) =>
-                                            updateClassValue(
-                                              col.id,
-                                              pIdx,
-                                              e.target.value,
-                                            )
-                                          }
-                                          placeholder={
-                                            col.selectedTeacher ? "" : "—"
-                                          }
-                                          style={{ fontSize: "15px" }}
-                                          className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
-                                        />
+                                        <div className="relative">
+                                          <input
+                                            type="text"
+                                            value={classVal}
+                                            onChange={(e) =>
+                                              updateClassValue(
+                                                col.id,
+                                                pIdx,
+                                                e.target.value,
+                                              )
+                                            }
+                                            placeholder={
+                                              col.selectedTeacher ? "" : "—"
+                                            }
+                                            style={{ fontSize: "15px" }}
+                                            className={`w-full text-center font-extrabold px-2 py-2 rounded-md border-2 focus:outline-none ${classVal ? "bg-blue-50 border-blue-400 text-blue-900" : "bg-white border-slate-200 text-slate-300"}`}
+                                          />
+                                          {col.selectedTeacher &&
+                                            !inLeave &&
+                                            !isClassSlotFree(classVal) && (
+                                              <div
+                                                className="text-center text-slate-500 mt-0.5"
+                                                style={{ fontSize: "10px" }}
+                                              >
+                                                Outside leave · present
+                                              </div>
+                                            )}
+                                        </div>
                                       )}
                                     </td>
                                   );
@@ -2015,10 +2292,15 @@ export default function App() {
                                 </td>
                                 {visibleColumns.map((col) => {
                                   const classVal = col.classValues[pIdx] ?? "";
-                                  const isFree = col.selectedTeacher
-                                    ? classVal.trim() === "" ||
-                                      classVal.trim().toLowerCase() === "free"
-                                    : true;
+                                  const inLeave = isPeriodInLeaveDuration(
+                                    col.leaveType,
+                                    pIdx,
+                                  );
+                                  const isFreeSlot = isClassSlotFree(classVal);
+                                  const needsAdj = needsPeriodAdjustment(
+                                    col,
+                                    pIdx,
+                                  );
                                   const avail = getAvailableSubstitutes(
                                     teachers,
                                     columns,
@@ -2026,6 +2308,7 @@ export default function App() {
                                     pIdx,
                                     selectedDay,
                                     PERIODS.length,
+                                    priorAdjustmentLoad,
                                   );
                                   const cur = col.substituteTeacher[pIdx] || "";
                                   const isValid =
@@ -2035,12 +2318,19 @@ export default function App() {
                                       key={col.id}
                                       className="border border-slate-300 px-2 py-1"
                                     >
-                                      {isFree || !col.selectedTeacher ? (
+                                      {!col.selectedTeacher || isFreeSlot ? (
                                         <div
                                           className="w-full text-center text-slate-300 italic py-2"
                                           style={{ fontSize: "13px" }}
                                         >
                                           — Free —
+                                        </div>
+                                      ) : !inLeave ? (
+                                        <div
+                                          className="w-full text-center text-emerald-700 font-semibold py-2 rounded-md bg-emerald-50 border border-emerald-200"
+                                          style={{ fontSize: "13px" }}
+                                        >
+                                          — Present —
                                         </div>
                                       ) : (
                                         <div>
@@ -2075,7 +2365,8 @@ export default function App() {
                                                 value={t.name}
                                               >
                                                 {t.name} ({t.freeBefore},
-                                                {t.freeAfter})
+                                                {t.freeAfter}) · load{" "}
+                                                {t.adjLoad}
                                               </option>
                                             ))}
                                           </select>
@@ -2095,24 +2386,65 @@ export default function App() {
                                             className="w-full border border-slate-300 rounded-md px-1 py-1 bg-slate-50 text-slate-600 focus:outline-none"
                                           >
                                             <option value="">
-                                              -- Manual Select (All) --
+                                              -- Manual Select (All, fair order) --
                                             </option>
-                                            {teachers.map((t) => {
-                                              const { before, after } =
-                                                getFreePeriodCounts(
-                                                  t,
-                                                  selectedDay,
-                                                  PERIODS.length,
+                                            {[...teachers]
+                                              .map((t) => {
+                                                const assigned =
+                                                  getAssignedSubPeriods(
+                                                    columns,
+                                                    t.name,
+                                                    {
+                                                      colId: col.id,
+                                                      periodIdx: pIdx,
+                                                    },
+                                                  );
+                                                const { before, after } =
+                                                  getEffectiveFreePeriodCounts(
+                                                    t,
+                                                    selectedDay,
+                                                    PERIODS.length,
+                                                    assigned,
+                                                  );
+                                                const todayLoad =
+                                                  countTeacherAdjustmentLoad(
+                                                    columns,
+                                                    t.name,
+                                                    {
+                                                      colId: col.id,
+                                                      periodIdx: pIdx,
+                                                    },
+                                                  );
+                                                const adjLoad =
+                                                  todayLoad +
+                                                  (priorAdjustmentLoad[
+                                                    t.name
+                                                  ] || 0);
+                                                return {
+                                                  name: t.name,
+                                                  before,
+                                                  after,
+                                                  adjLoad,
+                                                };
+                                              })
+                                              .sort((a, b) => {
+                                                if (a.adjLoad !== b.adjLoad)
+                                                  return a.adjLoad - b.adjLoad;
+                                                return a.name.localeCompare(
+                                                  b.name,
+                                                  undefined,
+                                                  { sensitivity: "base" },
                                                 );
-                                              return (
+                                              })
+                                              .map((t) => (
                                                 <option
                                                   key={t.name}
                                                   value={t.name}
                                                 >
-                                                  {t.name} ({before},{after})
+                                                  {t.name} ({t.before},{t.after})
+                                                  · load {t.adjLoad}
                                                 </option>
-                                              );
-                                            })}
+                                              ))}
                                           </select>
                                           <div className="mt-1 flex justify-between px-1">
                                             {avail.length === 0 ? (
@@ -2134,7 +2466,9 @@ export default function App() {
                                               style={{ fontSize: "11px" }}
                                               className="text-slate-400"
                                             >
-                                              (before,after)
+                                              {needsAdj
+                                                ? "(free · load)"
+                                                : ""}
                                             </span>
                                           </div>
                                         </div>
@@ -2153,14 +2487,14 @@ export default function App() {
                                   ✍️ Sign
                                 </td>
                                 {visibleColumns.map((col) => {
-                                  const cv = col.classValues[pIdx] ?? "";
-                                  const isFree =
-                                    cv.trim() === "" ||
-                                    cv.trim().toLowerCase() === "free";
+                                  const needsAdj = needsPeriodAdjustment(
+                                    col,
+                                    pIdx,
+                                  );
                                   return (
                                     <td
                                       key={col.id}
-                                      className={`border border-slate-300 px-2 py-6 ${isFree ? "bg-slate-50" : ""}`}
+                                      className={`border border-slate-300 px-2 py-6 ${needsAdj ? "" : "bg-slate-50"}`}
                                     />
                                   );
                                 })}
@@ -2321,28 +2655,102 @@ function RecordsPage({
     0,
   );
 
-  // 3. Detailed Stats for "Leaderboard"
-  const substituteStats = useMemo(() => {
-    const counts: Record<string, number> = {};
-    filteredRecords.forEach((record) => {
-      record.columns.forEach((col) => {
-        col.substituteTeacher.forEach((sub) => {
-          if (sub && sub.trim() !== "") {
-            counts[sub.trim()] = (counts[sub.trim()] || 0) + 1;
-          }
-        });
-      });
-    });
-    return Object.entries(counts)
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [filteredRecords]);
-
+  // 3. Detailed Stats for "Leaderboard" (class workload + adjustment load)
   const parseINDate = (dateString: string) => {
     const parts = dateString.split("/").map((p) => Number(p));
     if (parts.length !== 3) return null;
     return new Date(parts[2], parts[1] - 1, parts[0]);
   };
+
+  const workloadDateRange = useMemo(() => {
+    const now = new Date();
+    now.setHours(23, 59, 59, 999);
+    if (filterView === "day") {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      return { start, end: start };
+    }
+    if (filterView === "week") {
+      const start = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+      start.setHours(0, 0, 0, 0);
+      return { start, end: now };
+    }
+    // month / all → current calendar month (classes assigned in the month)
+    if (filterView === "month") {
+      return {
+        start: new Date(now.getFullYear(), now.getMonth(), 1),
+        end: new Date(now.getFullYear(), now.getMonth() + 1, 0),
+      };
+    }
+    // "all": span of records if present, else current month
+    const parsed = records
+      .map((r) => parseINDate(r.date))
+      .filter((d): d is Date => !!d && !Number.isNaN(d.getTime()));
+    if (parsed.length > 0) {
+      const times = parsed.map((d) => d.getTime());
+      return {
+        start: new Date(Math.min(...times)),
+        end: new Date(Math.max(...times)),
+      };
+    }
+    return {
+      start: new Date(now.getFullYear(), now.getMonth(), 1),
+      end: new Date(now.getFullYear(), now.getMonth() + 1, 0),
+    };
+  }, [filterView, records]);
+
+  const teacherWorkloadStats = useMemo(() => {
+    const adjCounts: Record<string, number> = {};
+    filteredRecords.forEach((record) => {
+      record.columns.forEach((col) => {
+        col.substituteTeacher.forEach((sub, i) => {
+          if (
+            sub &&
+            sub.trim() !== "" &&
+            isPeriodInLeaveDuration(col.leaveType, i)
+          ) {
+            const name = sub.trim();
+            adjCounts[name] = (adjCounts[name] || 0) + 1;
+          }
+        });
+      });
+    });
+
+    const names = new Set<string>([
+      ...teachers.map((t) => t.name),
+      ...Object.keys(adjCounts),
+    ]);
+
+    return Array.from(names)
+      .map((name) => {
+        const teacher = teachers.find((t) => t.name === name);
+        const classLoad = teacher
+          ? getClassLoadInDateRange(
+              teacher,
+              workloadDateRange.start,
+              workloadDateRange.end,
+            )
+          : 0;
+        const weeklyClassLoad = teacher ? getWeeklyClassLoad(teacher) : 0;
+        const adjLoad = adjCounts[name] || 0;
+        return {
+          name,
+          classLoad,
+          weeklyClassLoad,
+          adjLoad,
+          totalLoad: classLoad + adjLoad,
+        };
+      })
+      .filter((s) => s.classLoad > 0 || s.adjLoad > 0)
+      .sort((a, b) => {
+        if (b.adjLoad !== a.adjLoad) return b.adjLoad - a.adjLoad;
+        if (b.totalLoad !== a.totalLoad) return b.totalLoad - a.totalLoad;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+  }, [filteredRecords, teachers, workloadDateRange]);
+
+  // Keep alias used by older leaderboard references
+  const substituteStats = teacherWorkloadStats;
 
   const formatExportHeader = (dateString: string) => {
     const date = parseINDate(dateString);
@@ -2356,6 +2764,9 @@ function RecordsPage({
     return `${day}.${month}.${year} ${weekday}`;
   };
 
+  const formatRangeLabel = (start: Date, end: Date) =>
+    `${start.getDate()}/${start.getMonth() + 1}/${String(start.getFullYear()).slice(-2)} – ${end.getDate()}/${end.getMonth() + 1}/${String(end.getFullYear()).slice(-2)}`;
+
   const escapeCsv = (value: string | number) => {
     const str = String(value ?? "");
     if (/[,\n"]/g.test(str)) {
@@ -2365,8 +2776,8 @@ function RecordsPage({
   };
 
   const handleExportMonthlyReport = () => {
-    if (filteredRecords.length === 0) {
-      alert("No records available to export.");
+    if (teachers.length === 0 && filteredRecords.length === 0) {
+      alert("No teachers or records available to export.");
       return;
     }
 
@@ -2379,74 +2790,94 @@ function RecordsPage({
       return da.getTime() - db.getTime();
     });
 
-    // Is week (last 7 days) ke records — Load column ke liye
+    // Is week (last 7 days) ke records — Adj Load column ke liye
     const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const weeklyRecords = records.filter((r) => r.timestamp >= weekStart);
 
-    // Weekly load per teacher calculate karo
-    const weeklyLoadByTeacher: Record<string, number> = {};
+    const weeklyAdjByTeacher: Record<string, number> = {};
     weeklyRecords.forEach((record) => {
       record.columns.forEach((col) => {
-        col.substituteTeacher.forEach((sub) => {
+        col.substituteTeacher.forEach((sub, i) => {
           const name = sub?.trim();
-          if (!name) return;
-          weeklyLoadByTeacher[name] = (weeklyLoadByTeacher[name] || 0) + 1;
+          if (!name || !isPeriodInLeaveDuration(col.leaveType, i)) return;
+          weeklyAdjByTeacher[name] = (weeklyAdjByTeacher[name] || 0) + 1;
+        });
+      });
+    });
+
+    const countsByTeacher: Record<string, Record<string, number>> = {};
+    const adjTotalByTeacher: Record<string, number> = {};
+    filteredRecords.forEach((record) => {
+      record.columns.forEach((col) => {
+        col.substituteTeacher.forEach((sub, i) => {
+          const name = sub?.trim();
+          if (!name || !isPeriodInLeaveDuration(col.leaveType, i)) return;
+          countsByTeacher[name] = countsByTeacher[name] || {};
+          countsByTeacher[name][record.date] =
+            (countsByTeacher[name][record.date] || 0) + 1;
+          adjTotalByTeacher[name] = (adjTotalByTeacher[name] || 0) + 1;
         });
       });
     });
 
     const teacherNames = Array.from(
-      filteredRecords.reduce((set, record) => {
-        record.columns.forEach((col) => {
-          col.substituteTeacher.forEach((sub) => {
-            const name = sub?.trim();
-            if (name) set.add(name);
-          });
-        });
-        return set;
-      }, new Set<string>()),
+      new Set([
+        ...teachers.map((t) => t.name),
+        ...Object.keys(adjTotalByTeacher),
+      ]),
     ).sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
 
-    const countsByTeacher: Record<string, Record<string, number>> = {};
     teacherNames.forEach((name) => {
-      countsByTeacher[name] = {};
+      countsByTeacher[name] = countsByTeacher[name] || {};
       uniqueDates.forEach((date) => {
-        countsByTeacher[name][date] = 0;
+        countsByTeacher[name][date] = countsByTeacher[name][date] || 0;
       });
     });
 
-    filteredRecords.forEach((record) => {
-      record.columns.forEach((col) => {
-        col.substituteTeacher.forEach((sub) => {
-          const name = sub?.trim();
-          if (!name) return;
-          countsByTeacher[name] = countsByTeacher[name] || {};
-          countsByTeacher[name][record.date] =
-            (countsByTeacher[name][record.date] || 0) + 1;
-        });
-      });
-    });
-
-    // Get week range label for header
     const weekEndDate = new Date();
     const weekStartDate = new Date(weekStart);
-    const weekLabel = `Week Load (${weekStartDate.getDate()}/${weekStartDate.getMonth() + 1} - ${weekEndDate.getDate()}/${weekEndDate.getMonth() + 1})`;
+    const weekLabel = `Adj Week Load (${weekStartDate.getDate()}/${weekStartDate.getMonth() + 1} - ${weekEndDate.getDate()}/${weekEndDate.getMonth() + 1})`;
+    const classLoadLabel = `Class Load (${formatRangeLabel(workloadDateRange.start, workloadDateRange.end)})`;
+    const weeklyClassLabel = "Weekly Class Load (Mon-Sat)";
 
     const headers = [
       "SR.No",
       "Name",
+      weeklyClassLabel,
+      classLoadLabel,
       weekLabel,
       ...uniqueDates.map(formatExportHeader),
-      "Total",
+      "Adj Total",
+      "Total Load (Class + Adj)",
     ];
+
     const rows = teacherNames.map((name, idx) => {
+      const teacher = teachers.find((t) => t.name === name);
+      const weeklyClassLoad = teacher ? getWeeklyClassLoad(teacher) : 0;
+      const classLoad = teacher
+        ? getClassLoadInDateRange(
+            teacher,
+            workloadDateRange.start,
+            workloadDateRange.end,
+          )
+        : 0;
       const dailyCounts = uniqueDates.map(
-        (date) => countsByTeacher[name][date] ?? 0,
+        (date) => countsByTeacher[name]?.[date] ?? 0,
       );
-      const total = dailyCounts.reduce((sum, value) => sum + value, 0);
-      // Load = is week ka total substitute count (all records se, sirf last 7 days)
-      const weeklyLoad = weeklyLoadByTeacher[name] || 0;
-      return [idx + 1, name, weeklyLoad, ...dailyCounts, total];
+      const adjTotal =
+        adjTotalByTeacher[name] ??
+        dailyCounts.reduce((sum, value) => sum + value, 0);
+      const weeklyAdj = weeklyAdjByTeacher[name] || 0;
+      return [
+        idx + 1,
+        name,
+        weeklyClassLoad,
+        classLoad,
+        weeklyAdj,
+        ...dailyCounts,
+        adjTotal,
+        classLoad + adjTotal,
+      ];
     });
 
     const csv = [headers, ...rows]
@@ -2459,7 +2890,7 @@ function RecordsPage({
     link.href = url;
     link.setAttribute(
       "download",
-      `Adjustment_Monthly_Report_${new Date().toISOString().slice(0, 10)}.csv`,
+      `Teacher_Workload_Report_${new Date().toISOString().slice(0, 10)}.csv`,
     );
     document.body.appendChild(link);
     link.click();
@@ -2506,7 +2937,7 @@ function RecordsPage({
             onClick={handleExportMonthlyReport}
             className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-emerald-700 transition flex items-center gap-2"
           >
-            📥 Download Excel Report
+            📥 Download Workload Excel Report
           </button>
         </div>
       </div>
@@ -2691,12 +3122,10 @@ function RecordsPage({
                                     .map((period, pIdx) => {
                                       const cv = col.classValues[pIdx];
                                       const sub = col.substituteTeacher[pIdx];
-                                      const isFree =
-                                        !cv ||
-                                        cv.trim() === "" ||
-                                        cv.trim().toLowerCase() === "free";
-
-                                      if (isFree) return null;
+                                      // Include every assigned period in the leave window
+                                      // (half-day leave only covers morning or afternoon).
+                                      if (!needsPeriodAdjustment(col, pIdx))
+                                        return null;
 
                                       return (
                                         <tr
@@ -2714,6 +3143,9 @@ function RecordsPage({
 
                                           <td className="p-3 border border-slate-200 font-bold text-red-700">
                                             {col.selectedTeacher}
+                                            <div className="text-xs font-medium text-amber-700 mt-0.5">
+                                              {leaveTypeLabel(col.leaveType)}
+                                            </div>
                                           </td>
                                           <td className="p-3 border border-slate-200 text-slate-600">
                                             <strong>{period.label}</strong>{" "}
@@ -2771,7 +3203,8 @@ function RecordsPage({
                                           colSpan={3}
                                           className="p-3 border border-slate-200 text-slate-500 italic text-center"
                                         >
-                                          No assigned classes today (All free)
+                                          No assigned classes during leave
+                                          duration
                                         </td>
                                       </tr>
                                     );
@@ -2798,40 +3231,63 @@ function RecordsPage({
           id="analytics-stats-content"
           className="bg-white rounded-xl shadow-sm border border-slate-200 p-6"
         >
-          <div className="flex items-center justify-between mb-6 border-b pb-4">
+          <div className="flex items-center justify-between mb-6 border-b pb-4 flex-wrap gap-3">
             <div>
               <h2 className="text-xl font-bold text-slate-800">
-                🏆 Substitute Teachers Leaderboard
+                🏆 Teachers Workload & Adjustments
               </h2>
               <p className="text-slate-500 text-sm">
-                Based on currently selected filter:{" "}
+                Class load for{" "}
+                <strong className="text-slate-700">
+                  {formatRangeLabel(
+                    workloadDateRange.start,
+                    workloadDateRange.end,
+                  )}
+                </strong>
+                {" · "}
+                Filter:{" "}
                 <strong className="text-blue-600 uppercase">
                   {filterView}
                 </strong>
               </p>
             </div>
-            <div className="bg-blue-50 text-blue-800 px-4 py-2 rounded-lg font-bold border border-blue-200">
-              Total Adjusted Classes: {totalSubstitutions}
+            <div className="flex gap-2 flex-wrap">
+              <div className="bg-indigo-50 text-indigo-800 px-4 py-2 rounded-lg font-bold border border-indigo-200 text-sm">
+                Teachers: {substituteStats.length}
+              </div>
+              <div className="bg-blue-50 text-blue-800 px-4 py-2 rounded-lg font-bold border border-blue-200 text-sm">
+                Adjustments: {totalSubstitutions}
+              </div>
             </div>
           </div>
 
           {substituteStats.length === 0 ? (
             <div className="text-center py-10 text-slate-500 italic">
-              No adjustments recorded for this period.
+              No teacher workload data. Load the timetable sheet and/or save
+              adjustments first.
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm border-collapse rounded-lg overflow-hidden border border-slate-200">
                 <thead className="bg-slate-100 text-slate-700">
                   <tr>
-                    <th className="p-4 border-b border-slate-200 font-bold w-16 text-center">
+                    <th className="p-3 border-b border-slate-200 font-bold w-14 text-center">
                       Rank
                     </th>
-                    <th className="p-4 border-b border-slate-200 font-bold">
+                    <th className="p-3 border-b border-slate-200 font-bold">
                       Teacher Name
                     </th>
-                    <th className="p-4 border-b border-slate-200 font-bold w-1/4 text-center">
-                      Adjustments Taken
+                    <th className="p-3 border-b border-slate-200 font-bold text-center">
+                      Weekly Class Load
+                    </th>
+                    <th className="p-3 border-b border-slate-200 font-bold text-center">
+                      Class Load (Period)
+                    </th>
+                    <th className="p-3 border-b border-slate-200 font-bold text-center">
+                      Adj Load Taken
+                    </th>
+                    <th className="p-3 border-b border-slate-200 font-bold text-center">
+                      Total (Class + Adj)
                     </th>
                   </tr>
                 </thead>
@@ -2860,13 +3316,28 @@ function RecordsPage({
                         key={stat.name}
                         className={`border-b border-slate-100 hover:bg-blue-50 transition ${rowBg}`}
                       >
-                        <td className="p-4 text-center">{rankBadge}</td>
-                        <td className="p-4 font-bold text-slate-800 text-lg">
+                        <td className="p-3 text-center">{rankBadge}</td>
+                        <td className="p-3 font-bold text-slate-800">
                           {stat.name}
                         </td>
-                        <td className="p-4 text-center">
-                          <span className="bg-blue-100 text-blue-800 font-black px-4 py-1.5 rounded-full border border-blue-300">
-                            {stat.count} Classes
+                        <td className="p-3 text-center">
+                          <span className="bg-slate-100 text-slate-700 font-semibold px-3 py-1 rounded-full border border-slate-300">
+                            {stat.weeklyClassLoad}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <span className="bg-indigo-100 text-indigo-800 font-bold px-3 py-1 rounded-full border border-indigo-300">
+                            {stat.classLoad}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <span className="bg-blue-100 text-blue-800 font-black px-3 py-1 rounded-full border border-blue-300">
+                            {stat.adjLoad}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <span className="bg-emerald-100 text-emerald-800 font-black px-3 py-1 rounded-full border border-emerald-300">
+                            {stat.totalLoad}
                           </span>
                         </td>
                       </tr>

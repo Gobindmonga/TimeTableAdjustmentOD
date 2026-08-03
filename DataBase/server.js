@@ -50,6 +50,7 @@ const AdjustmentSchema = new mongoose.Schema({
     {
       id: Number,
       selectedTeacher: String,
+      leaveType: { type: String, default: "full" },
       substituteTeacher: [String],
       classValues: [String],
     },

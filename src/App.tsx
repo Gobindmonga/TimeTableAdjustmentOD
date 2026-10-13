@@ -5,9 +5,8 @@ import React, {
   useCallback,
   useMemo,
 } from "react";
-import html2canvas from "html2canvas";
-import jsPDF from "jspdf";
 import defaultSchoolLogo from "./GITA_NIKETAN_AWASIYA_VIDYALAYA-logo.png";
+import principalSign from "./sign.jpeg";
 
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const isLocalHost =
@@ -652,10 +651,15 @@ function buildPrintHTML(
 
   const tfootHTML = `
     <tr class="footer-row">
-      <td colspan="${3 + totalCols}" style="padding:5px 8px!important;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span>PRINCIPAL</span>
-          <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
+      <td colspan="${3 + totalCols}" style="padding:4px 8px!important;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+          <div style="display:flex;flex-direction:column;align-items:center;min-width:120px;">
+            <img src="${principalSign}" alt="Principal Signature" style="height:28px;max-width:110px;object-fit:contain;mix-blend-mode:multiply;display:block;margin-bottom:2px;" />
+            <span>PRINCIPAL</span>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:center;min-width:160px;justify-content:flex-end;">
+            <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
+          </div>
         </div>
       </td>
     </tr>`;
@@ -1199,7 +1203,7 @@ export default function App() {
 
     return `<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"/><style>${css}</style></head>
+<head><meta charset="utf-8"/><base href="${window.location.origin}/"/><style>${css}</style></head>
 <body>${pages}</body>
 </html>`;
   };
@@ -1217,31 +1221,6 @@ export default function App() {
       win.print();
     }, 500);
   };
-
-  // ── Shared Print Styles ──
-  const printStyles = `
-    .pdf-page { width: 210mm; padding: 10mm; background: white; margin: 0 auto; font-family: Arial, sans-serif; color: black; }
-    .school-header { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 5px 0; border-bottom: 2px solid #1e293b; margin-bottom: 5px; }
-    .school-logo { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #1e293b; object-fit: cover; }
-    .school-logo-placeholder { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #1e293b; display: flex; align-items: center; justify-content: center; font-size: 24px; background: #f1f5f9; }
-    .school-info { text-align: center; }
-    .school-name-main { font-size: 22px; font-weight: 900; color: #1e293b; }
-    .school-name-main span { color: #dc2626; }
-    .school-type { font-size: 13px; font-weight: 700; color: #1d4ed8; letter-spacing: 2px; }
-    .school-address { font-size: 12px; color: #64748b; }
-    .reg-title { text-align: center; font-size: 16px; font-weight: 800; color: #1e293b; margin: 5px 0; text-transform: uppercase; border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1; padding: 3px 0; }
-    .date-bar { display: flex; justify-content: space-between; font-size: 13px; color: #334155; margin-bottom: 5px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; border: 1.5px solid #1e293b; table-layout: fixed; }
-    th, td { border: 0.5px solid #94a3b8; padding: 4px; vertical-align: middle; text-align: center; }
-    thead th { background: #1e293b !important; color: white !important; }
-    .period-cell { background: #e2e8f0 !important; color: #1e293b !important; font-weight: bold; }
-    .row-class { background: #fffbeb !important; font-weight: bold; color: #92400e; }
-    .row-sub { background: #f0fdf4 !important; font-weight: bold; color: #166534; }
-    .val-class { font-weight: 400; color: #1e3a5f; font-size: 13px; }
-    .val-sub { font-weight: 900; color: #166534; font-size: 13px; }
-    .break-row td { background: #fef9c3 !important; font-weight: 800; color: #854d0e; }
-    .footer-row td { background: #f8fafc !important; font-weight: 700; padding: 10px !important; }
-  `;
 
   const handleDownloadPDF = () => {
     const win = window.open("", "_blank", "width=1200,height=900");
@@ -1339,6 +1318,7 @@ export default function App() {
       <html>
         <head>
           <meta charset="utf-8">
+          <base href="${window.location.origin}/" />
           <title>${title}</title>
           ${styles}
           <style>
@@ -1386,9 +1366,14 @@ export default function App() {
                 <p style="color: #64748b; font-size: 12px;">Report Generated: ${new Date().toLocaleString("en-IN")}</p>
               </div>
               <div id="main-content-target"></div>
-              <div style="margin-top: 80px; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px;">
-                <div style="border-top: 2px solid #334155; padding-top: 10px; width: 220px; text-align: center;">PRINCIPAL</div>
-                <div style="border-top: 2px solid #334155; padding-top: 10px; width: 220px; text-align: center;">INCHARGE</div>
+              <div style="margin-top: 50px; display: flex; justify-content: space-between; font-weight: bold; font-size: 14px; align-items: flex-end;">
+                <div style="width: 220px; text-align: center; display: flex; flex-direction: column; align-items: center;">
+                  <img src="${principalSign}" alt="Principal Signature" style="height: 35px; object-fit: contain; mix-blend-mode: multiply; margin-bottom: 5px;" />
+                  <div style="border-top: 2px solid #334155; padding-top: 10px; width: 100%;">PRINCIPAL</div>
+                </div>
+                <div style="width: 220px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: flex-end;">
+                  <div style="border-top: 2px solid #334155; padding-top: 10px; width: 100%;">INCHARGE</div>
+                </div>
               </div>
             </div>
           </div>
@@ -2527,9 +2512,19 @@ export default function App() {
                               className="border border-slate-300 px-4 py-3 font-semibold text-slate-600"
                               style={{ fontSize: "14px" }}
                             >
-                              <div className="flex justify-between">
-                                <span>PRINCIPAL</span>
-                                <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
+                              <div className="flex justify-between items-end">
+                                <div className="flex flex-col items-center">
+                                  <img
+                                    src={principalSign}
+                                    alt="Principal Signature"
+                                    className="h-8 object-contain mb-1"
+                                    style={{ mixBlendMode: "multiply" }}
+                                  />
+                                  <span>PRINCIPAL</span>
+                                </div>
+                                <div className="flex flex-col items-center justify-end">
+                                  <span>TIME-TABLE ADJUSTMENT INCHARGE</span>
+                                </div>
                               </div>
                             </td>
                           </tr>

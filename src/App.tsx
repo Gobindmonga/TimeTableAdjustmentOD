@@ -23,6 +23,7 @@ const API_BASE_URL =
 
 const AUTO_SAVE_DELAY = 2000;
 const BREAK_AFTER_IDX = 4;
+const TOTAL_PERIODS = 10;
 const DAYS = [
   "Monday",
   "Tuesday",
@@ -33,15 +34,16 @@ const DAYS = [
 ];
 const DEFAULT_TIMINGS = {
   periods: [
-    { label: "Period 1", start: "07:40", end: "08:15" },
-    { label: "Period 2", start: "08:15", end: "08:50" },
-    { label: "Period 3", start: "08:50", end: "09:25" },
-    { label: "Period 4", start: "09:35", end: "10:10" },
-    { label: "Period 5", start: "10:10", end: "10:40" },
-    { label: "Period 6", start: "11:40", end: "12:25" },
-    { label: "Period 7", start: "12:25", end: "13:10" },
-    { label: "Period 8", start: "13:10", end: "13:55" },
-    { label: "Period 9", start: "13:55", end: "14:40" },
+    { label: "Period 0", start: "07:40", end: "08:15" },
+    { label: "Period 1", start: "08:15", end: "08:50" },
+    { label: "Period 2", start: "08:50", end: "09:25" },
+    { label: "Period 3", start: "09:35", end: "10:10" },
+    { label: "Period 4", start: "10:10", end: "10:40" },
+    { label: "Period 5", start: "11:40", end: "12:25" },
+    { label: "Period 6", start: "12:25", end: "13:10" },
+    { label: "Period 7", start: "13:10", end: "13:55" },
+    { label: "Period 8", start: "13:55", end: "14:15" },
+    { label: "Period 9", start: "14:15", end: "14:30" },
   ],
   majorBreak: { start: "10:40", end: "11:40" },
 };
@@ -50,7 +52,7 @@ const DEFAULT_TIMINGS = {
 const LS_SCHOOL_KEY = "tas_school_info_v3";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
-const LS_TIMINGS_KEY = "tas_timings_data_v2";
+const LS_TIMINGS_KEY = "tas_timings_data_v4";
 
 const DEFAULT_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1jsvywGYMQ_dYZb1cpFGsREMA575hbzkDoa2F0R9VkFw/edit?usp=sharing";
@@ -119,22 +121,26 @@ function emptyColumn(id: number): Column {
     id,
     selectedTeacher: "",
     leaveType: "full",
-    substituteTeacher: Array(9).fill(""),
-    classValues: Array(9).fill(""),
+    substituteTeacher: Array(TOTAL_PERIODS).fill(""),
+    classValues: Array(TOTAL_PERIODS).fill(""),
   };
 }
 
 function normalizeColumn(col: Partial<Column> & { id: number }): Column {
+  const pad = (arr: unknown) => {
+    const list = Array.isArray(arr) ? arr.map((x) => String(x ?? "")) : [];
+    if (list.length >= TOTAL_PERIODS) return list.slice(0, TOTAL_PERIODS);
+    return [
+      ...list,
+      ...Array(TOTAL_PERIODS - list.length).fill(""),
+    ];
+  };
   return {
     id: col.id,
     selectedTeacher: col.selectedTeacher ?? "",
     leaveType: normalizeLeaveType(col.leaveType),
-    substituteTeacher: Array.isArray(col.substituteTeacher)
-      ? [...col.substituteTeacher]
-      : Array(9).fill(""),
-    classValues: Array.isArray(col.classValues)
-      ? [...col.classValues]
-      : Array(9).fill(""),
+    substituteTeacher: pad(col.substituteTeacher),
+    classValues: pad(col.classValues),
   };
 }
 
@@ -172,7 +178,15 @@ interface TimingData {
 function loadTimings(): TimingData {
   try {
     const saved = localStorage.getItem(LS_TIMINGS_KEY);
-    if (saved) return JSON.parse(saved);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (
+        Array.isArray(parsed?.periods) &&
+        parsed.periods.length === DEFAULT_TIMINGS.periods.length
+      ) {
+        return parsed;
+      }
+    }
   } catch {}
   return DEFAULT_TIMINGS;
 }
@@ -293,7 +307,8 @@ function extractTeachers(rows: string[][]): Teacher[] {
         if (isDay(dc)) {
           const dk = dc.charAt(0).toUpperCase() + dc.slice(1).toLowerCase();
           const periods: string[] = [];
-          for (let p = 1; p <= 9; p++) periods.push((r[p] ?? "").trim());
+          for (let p = 1; p <= TOTAL_PERIODS; p++)
+            periods.push((r[p] ?? "").trim());
           schedule[dk] = periods;
           daysFound++;
         } else if (isTeacherName(dc) || isTeacherName((r[1] ?? "").trim()))
@@ -734,7 +749,7 @@ export default function App() {
   const [timings, setTimings] = useState<TimingData>(() => loadTimings());
   const PERIODS = timings.periods.map((p) => ({
     label: p.label,
-    time: p.start && p.end ? `${p.start}-${p.end}` : p.start || p.end || "—",
+    time: p.start && p.end ? `${p.start}-${p.end}` : p.start || p.end || "",
   }));
 
   const [sheetUrl, setSheetUrl] = useState<string>(loadSheetUrl);
@@ -1108,10 +1123,10 @@ export default function App() {
           ...col,
           selectedTeacher: name,
           leaveType: col.leaveType || "full",
-          classValues: Array(9)
+          classValues: Array(TOTAL_PERIODS)
             .fill("")
             .map((_, i) => ds[i] ?? ""),
-          substituteTeacher: Array(9).fill(""),
+          substituteTeacher: Array(TOTAL_PERIODS).fill(""),
         };
       }),
     );
@@ -1134,14 +1149,14 @@ export default function App() {
     setColumns((prev) =>
       prev.map((col) => {
         const t = teachers.find((t) => t.name === col.selectedTeacher);
-        if (!t) return { ...col, substituteTeacher: Array(9).fill("") };
+        if (!t) return { ...col, substituteTeacher: Array(TOTAL_PERIODS).fill("") };
         const ds = t.schedule[day] ?? [];
         return {
           ...col,
-          classValues: Array(9)
+          classValues: Array(TOTAL_PERIODS)
             .fill("")
             .map((_, i) => ds[i] ?? ""),
-          substituteTeacher: Array(9).fill(""),
+          substituteTeacher: Array(TOTAL_PERIODS).fill(""),
         };
       }),
     );
@@ -1724,7 +1739,7 @@ export default function App() {
               </p>
 
               <div className="flex flex-col gap-3">
-                {timings.periods.slice(0, 5).map((p, idx) => (
+                {timings.periods.slice(0, BREAK_AFTER_IDX + 1).map((p, idx) => (
                   <div key={idx} className="flex items-center gap-4">
                     <span className="w-24 font-bold text-slate-800">
                       {p.label}
@@ -1788,8 +1803,8 @@ export default function App() {
                   />
                 </div>
 
-                {timings.periods.slice(5).map((p, i) => {
-                  const idx = i + 5;
+                {timings.periods.slice(BREAK_AFTER_IDX + 1).map((p, i) => {
+                  const idx = i + BREAK_AFTER_IDX + 1;
                   return (
                     <div key={idx} className="flex items-center gap-4">
                       <span className="w-24 font-bold text-slate-800">

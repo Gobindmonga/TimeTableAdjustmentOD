@@ -33,24 +33,24 @@ const DAYS = [
 ];
 const DEFAULT_TIMINGS = {
   periods: [
-    { label: "Period 1", start: "08:40", end: "09:20" },
-    { label: "Period 2", start: "09:20", end: "10:00" },
-    { label: "Period 3", start: "10:00", end: "10:40" },
-    { label: "Period 4", start: "10:50", end: "11:30" },
-    { label: "Period 5", start: "11:30", end: "12:05" },
-    { label: "Period 6", start: "12:25", end: "13:05" },
-    { label: "Period 7", start: "13:05", end: "13:40" },
-    { label: "Period 8", start: "13:40", end: "14:15" },
-    { label: "Period 9", start: "14:15", end: "14:25" },
+    { label: "Period 1", start: "07:40", end: "08:15" },
+    { label: "Period 2", start: "08:15", end: "08:50" },
+    { label: "Period 3", start: "08:50", end: "09:25" },
+    { label: "Period 4", start: "09:35", end: "10:10" },
+    { label: "Period 5", start: "10:10", end: "10:40" },
+    { label: "Period 6", start: "11:40", end: "12:25" },
+    { label: "Period 7", start: "12:25", end: "13:10" },
+    { label: "Period 8", start: "13:10", end: "13:55" },
+    { label: "Period 9", start: "13:55", end: "14:40" },
   ],
-  majorBreak: { start: "12:05", end: "12:25" },
+  majorBreak: { start: "10:40", end: "11:40" },
 };
 
 // ── localStorage KEYS ─────────────────────────────────────────────────────────
 const LS_SCHOOL_KEY = "tas_school_info_v3";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
-const LS_TIMINGS_KEY = "tas_timings_data";
+const LS_TIMINGS_KEY = "tas_timings_data_v2";
 
 const DEFAULT_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1jsvywGYMQ_dYZb1cpFGsREMA575hbzkDoa2F0R9VkFw/edit?usp=sharing";
@@ -347,6 +347,57 @@ function dayNameFromDate(date: Date): string {
     "Friday",
     "Saturday",
   ][date.getDay()];
+}
+
+function startOfDay(date: Date): Date {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+/** DD/MM/YYYY as stored on adjustment records. */
+function parseINDate(dateString: string): Date | null {
+  const parts = dateString.trim().split("/").map((p) => Number(p));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+  const date = new Date(parts[2], parts[1] - 1, parts[0]);
+  if (
+    date.getFullYear() !== parts[2] ||
+    date.getMonth() !== parts[1] - 1 ||
+    date.getDate() !== parts[0]
+  ) {
+    return null;
+  }
+  return date;
+}
+
+/** YYYY-MM-DD from a date input, parsed in local time. */
+function parseISODateLocal(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+function toISODateLocal(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function orderedDateRange(start: Date, end: Date): { start: Date; end: Date } {
+  const from = startOfDay(start);
+  const to = startOfDay(end);
+  return from <= to ? { start: from, end: to } : { start: to, end: from };
 }
 
 /** Sum of assigned timetable classes across every school day in [start, end]. */
@@ -2604,11 +2655,32 @@ function RecordsPage({
   teachers: Teacher[];
 }) {
   const [filterView, setFilterView] = useState<
-    "all" | "day" | "week" | "month"
+    "all" | "day" | "week" | "month" | "custom"
   >("all");
+  const [customStart, setCustomStart] = useState(() => {
+    const start = new Date();
+    start.setDate(start.getDate() - 6);
+    return toISODateLocal(start);
+  });
+  const [customEnd, setCustomEnd] = useState(() => toISODateLocal(new Date()));
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"list" | "stats">("list");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const customRange = useMemo(() => {
+    const start = parseISODateLocal(customStart);
+    const end = parseISODateLocal(customEnd);
+    if (!start || !end) return null;
+    return orderedDateRange(start, end);
+  }, [customStart, customEnd]);
+
+  const recordInCustomRange = (record: AdjustmentRecord) => {
+    if (!customRange) return false;
+    const recordDate = parseINDate(record.date);
+    if (!recordDate) return false;
+    const day = startOfDay(recordDate);
+    return day >= customRange.start && day <= customRange.end;
+  };
 
   // 1. Filter Logic
   const filteredRecords = useMemo(() => {
@@ -2636,9 +2708,10 @@ function RecordsPage({
         return record.timestamp >= Date.now() - 7 * 24 * 60 * 60 * 1000;
       if (filterView === "month")
         return record.timestamp >= Date.now() - 30 * 24 * 60 * 60 * 1000;
+      if (filterView === "custom") return recordInCustomRange(record);
       return true;
     });
-  }, [records, filterView, searchQuery]);
+  }, [records, filterView, searchQuery, customRange]);
 
   // 2. Stats Calculation for Top Header
   const totalTeachersAbsent = filteredRecords.reduce(
@@ -2651,15 +2724,14 @@ function RecordsPage({
   );
 
   // 3. Detailed Stats for "Leaderboard" (class workload + adjustment load)
-  const parseINDate = (dateString: string) => {
-    const parts = dateString.split("/").map((p) => Number(p));
-    if (parts.length !== 3) return null;
-    return new Date(parts[2], parts[1] - 1, parts[0]);
-  };
-
   const workloadDateRange = useMemo(() => {
     const now = new Date();
     now.setHours(23, 59, 59, 999);
+    if (filterView === "custom") {
+      if (customRange) return customRange;
+      const today = startOfDay(new Date());
+      return { start: today, end: today };
+    }
     if (filterView === "day") {
       const start = new Date();
       start.setHours(0, 0, 0, 0);
@@ -2692,7 +2764,7 @@ function RecordsPage({
       start: new Date(now.getFullYear(), now.getMonth(), 1),
       end: new Date(now.getFullYear(), now.getMonth() + 1, 0),
     };
-  }, [filterView, records]);
+  }, [filterView, records, customRange]);
 
   const teacherWorkloadStats = useMemo(() => {
     const adjCounts: Record<string, number> = {};
@@ -2785,9 +2857,12 @@ function RecordsPage({
       return da.getTime() - db.getTime();
     });
 
-    // Is week (last 7 days) ke records — Adj Load column ke liye
+    // Custom range uses the selected dates. Other views keep the last 7 days.
     const weekStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const weeklyRecords = records.filter((r) => r.timestamp >= weekStart);
+    const weeklyRecords =
+      filterView === "custom"
+        ? filteredRecords
+        : records.filter((r) => r.timestamp >= weekStart);
 
     const weeklyAdjByTeacher: Record<string, number> = {};
     weeklyRecords.forEach((record) => {
@@ -2831,7 +2906,10 @@ function RecordsPage({
 
     const weekEndDate = new Date();
     const weekStartDate = new Date(weekStart);
-    const weekLabel = `Adj Week Load (${weekStartDate.getDate()}/${weekStartDate.getMonth() + 1} - ${weekEndDate.getDate()}/${weekEndDate.getMonth() + 1})`;
+    const weekLabel =
+      filterView === "custom" && customRange
+        ? `Adj Load (${formatRangeLabel(customRange.start, customRange.end)})`
+        : `Adj Week Load (${weekStartDate.getDate()}/${weekStartDate.getMonth() + 1} - ${weekEndDate.getDate()}/${weekEndDate.getMonth() + 1})`;
     const classLoadLabel = `Class Load (${formatRangeLabel(workloadDateRange.start, workloadDateRange.end)})`;
     const weeklyClassLabel = "Weekly Class Load (Mon-Sat)";
 
@@ -2893,6 +2971,17 @@ function RecordsPage({
     URL.revokeObjectURL(url);
   };
 
+  const filterLabel =
+    filterView === "custom" && customRange
+      ? `Custom (${formatRangeLabel(customRange.start, customRange.end)})`
+      : filterView === "day"
+        ? "Today"
+        : filterView === "week"
+          ? "This Week"
+          : filterView === "month"
+            ? "This Month"
+            : "All Time";
+
   return (
     <div className="space-y-4">
       {/* Stats Header */}
@@ -2918,7 +3007,7 @@ function RecordsPage({
           <button
             onClick={() =>
               onPrintAnalytics(
-                `Adjustment Report - ${filterView.toUpperCase()}`,
+                `Adjustment Report - ${filterLabel}`,
                 activeTab === "list"
                   ? "analytics-list-content"
                   : "analytics-stats-content",
@@ -2926,7 +3015,7 @@ function RecordsPage({
             }
             className="bg-white text-blue-700 px-6 py-2 rounded-lg font-bold hover:bg-blue-50 transition flex items-center gap-2"
           >
-            🖨️ Print Analytic Report (${filterView.toUpperCase()})
+            🖨️ Print Analytic Report ({filterLabel})
           </button>
           <button
             onClick={handleExportMonthlyReport}
@@ -2941,18 +3030,20 @@ function RecordsPage({
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
         <div className="flex flex-wrap gap-3 items-center justify-between">
           <div className="flex gap-2 flex-wrap">
-            {(["all", "day", "week", "month"] as const).map((v) => {
+            {(["all", "day", "week", "month", "custom"] as const).map((v) => {
               const labels = {
                 all: "📅 All Time",
                 day: "📆 Today",
                 week: "📊 This Week",
                 month: "📈 This Month",
+                custom: "🗓️ Custom Range",
               };
               const colors = {
                 all: "bg-blue-600",
                 day: "bg-green-600",
                 week: "bg-orange-600",
                 month: "bg-purple-600",
+                custom: "bg-teal-600",
               };
               return (
                 <button
@@ -2973,6 +3064,33 @@ function RecordsPage({
             className="flex-1 min-w-[250px] border-2 border-slate-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
         </div>
+        {filterView === "custom" && (
+          <div className="mt-4 flex flex-wrap items-end gap-3 border-t border-slate-200 pt-4">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-600">From</span>
+              <input
+                type="date"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+                className="border-2 border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-slate-600">To</span>
+              <input
+                type="date"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+                className="border-2 border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400"
+              />
+            </label>
+            <p className="text-sm text-slate-600 pb-2">
+              {customRange
+                ? `Showing ${formatRangeLabel(customRange.start, customRange.end)}`
+                : "Pick a valid From and To date."}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Inner Tabs for View Switch */}
@@ -3241,9 +3359,7 @@ function RecordsPage({
                 </strong>
                 {" · "}
                 Filter:{" "}
-                <strong className="text-blue-600 uppercase">
-                  {filterView}
-                </strong>
+                <strong className="text-blue-600">{filterLabel}</strong>
               </p>
             </div>
             <div className="flex gap-2 flex-wrap">

@@ -22,7 +22,9 @@ const API_BASE_URL =
     : "https://timetableadjustmentod-2.onrender.com");
 
 const AUTO_SAVE_DELAY = 2000;
-const BREAK_AFTER_IDX = 4;
+const FRUIT_BREAK_AFTER_IDX = 3;
+const MAJOR_BREAK_AFTER_IDX = 5;
+const FIRST_HALF_AFTER_IDX = 3; // 1st Half ends at Fruit Break (Period 3), after which 2nd half starts
 const TOTAL_PERIODS = 10;
 const DAYS = [
   "Monday",
@@ -34,25 +36,26 @@ const DAYS = [
 ];
 const DEFAULT_TIMINGS = {
   periods: [
-    { label: "Period 0", start: "07:40", end: "08:15" },
-    { label: "Period 1", start: "08:15", end: "08:50" },
-    { label: "Period 2", start: "08:50", end: "09:25" },
-    { label: "Period 3", start: "09:35", end: "10:10" },
-    { label: "Period 4", start: "10:10", end: "10:40" },
-    { label: "Period 5", start: "11:40", end: "12:25" },
-    { label: "Period 6", start: "12:25", end: "13:10" },
-    { label: "Period 7", start: "13:10", end: "13:55" },
-    { label: "Period 8", start: "13:55", end: "14:15" },
+    { label: "Period 0", start: "08:00", end: "08:40" },
+    { label: "Period 1", start: "08:40", end: "09:20" },
+    { label: "Period 2", start: "09:20", end: "10:00" },
+    { label: "Period 3", start: "10:00", end: "10:40" },
+    { label: "Period 4", start: "10:50", end: "11:30" },
+    { label: "Period 5", start: "11:30", end: "12:05" },
+    { label: "Period 6", start: "12:30", end: "13:05" },
+    { label: "Period 7", start: "13:05", end: "13:40" },
+    { label: "Period 8", start: "13:40", end: "14:15" },
     { label: "Period 9", start: "14:15", end: "14:30" },
   ],
-  majorBreak: { start: "10:40", end: "11:40" },
+  fruitBreak: { start: "10:40", end: "10:50" },
+  majorBreak: { start: "12:05", end: "12:30" },
 };
 
 // ── localStorage KEYS ─────────────────────────────────────────────────────────
 const LS_SCHOOL_KEY = "tas_school_info_v3";
 const LS_LOGO_KEY = "tas_school_logo";
 const LS_SHEET_URL_KEY = "tas_sheet_url";
-const LS_TIMINGS_KEY = "tas_timings_data_v4";
+const LS_TIMINGS_KEY = "tas_timings_data_v5";
 
 const DEFAULT_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1jsvywGYMQ_dYZb1cpFGsREMA575hbzkDoa2F0R9VkFw/edit?usp=sharing";
@@ -99,8 +102,8 @@ function isPeriodInLeaveDuration(
   periodIdx: number,
 ): boolean {
   const t = normalizeLeaveType(leaveType);
-  if (t === "half-morning") return periodIdx <= BREAK_AFTER_IDX;
-  if (t === "half-afternoon") return periodIdx > BREAK_AFTER_IDX;
+  if (t === "half-morning") return periodIdx <= FIRST_HALF_AFTER_IDX;
+  if (t === "half-afternoon") return periodIdx > FIRST_HALF_AFTER_IDX;
   return true;
 }
 
@@ -172,6 +175,7 @@ interface PeriodTiming {
 
 interface TimingData {
   periods: PeriodTiming[];
+  fruitBreak?: { start: string; end: string };
   majorBreak: { start: string; end: string };
 }
 
@@ -184,7 +188,10 @@ function loadTimings(): TimingData {
         Array.isArray(parsed?.periods) &&
         parsed.periods.length === DEFAULT_TIMINGS.periods.length
       ) {
-        return parsed;
+        return {
+          ...parsed,
+          fruitBreak: parsed.fruitBreak || DEFAULT_TIMINGS.fruitBreak,
+        };
       }
     }
   } catch {}
@@ -443,9 +450,9 @@ function getFreePeriodCounts(
 ) {
   let before = 0,
     after = 0;
-  for (let i = 0; i <= BREAK_AFTER_IDX; i++)
+  for (let i = 0; i <= FIRST_HALF_AFTER_IDX; i++)
     if (isPeriodFree(teacher, day, i)) before++;
-  for (let i = BREAK_AFTER_IDX + 1; i < periodsLength - 1; i++)
+  for (let i = FIRST_HALF_AFTER_IDX + 1; i < periodsLength - 1; i++)
     if (isPeriodFree(teacher, day, i)) after++;
   return { before, after };
 }
@@ -481,10 +488,10 @@ function getEffectiveFreePeriodCounts(
 ) {
   let before = 0,
     after = 0;
-  for (let i = 0; i <= BREAK_AFTER_IDX; i++) {
+  for (let i = 0; i <= FIRST_HALF_AFTER_IDX; i++) {
     if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) before++;
   }
-  for (let i = BREAK_AFTER_IDX + 1; i < periodsLength - 1; i++) {
+  for (let i = FIRST_HALF_AFTER_IDX + 1; i < periodsLength - 1; i++) {
     if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) after++;
   }
   return { before, after };
@@ -591,9 +598,9 @@ function getAvailableSubstitutes(
       // Fair distribution: teachers with fewer adjustments rise to the top.
       if (a.adjLoad !== b.adjLoad) return a.adjLoad - b.adjLoad;
       const aFree =
-        periodIdx <= BREAK_AFTER_IDX ? a.freeBefore : a.freeAfter;
+        periodIdx <= FIRST_HALF_AFTER_IDX ? a.freeBefore : a.freeAfter;
       const bFree =
-        periodIdx <= BREAK_AFTER_IDX ? b.freeBefore : b.freeAfter;
+        periodIdx <= FIRST_HALF_AFTER_IDX ? b.freeBefore : b.freeAfter;
       if (bFree !== aFree) return bFree - aFree;
       return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
     });
@@ -608,7 +615,9 @@ function buildPrintHTML(
   periods: { label: string; time: string }[],
   majorBreak: { start: string; end: string },
   teachers: Teacher[],
+  fruitBreak?: { start: string; end: string },
 ) {
+  const fb = fruitBreak || DEFAULT_TIMINGS.fruitBreak;
   const totalCols = columns.length;
   // Adjusted width calculation: limit width for single/few teachers to prevent covering entire page
   let teacherW = Math.floor(82 / Math.max(totalCols, 1));
@@ -710,7 +719,10 @@ function buildPrintHTML(
       <td class="row-sign">✍️ Sign</td>
       ${columns.map(() => `<td><span class="sign-space"></span></td>`).join("")}
     </tr>`;
-    if (pIdx === BREAK_AFTER_IDX) {
+    if (pIdx === FRUIT_BREAK_AFTER_IDX) {
+      tbodyHTML += `<tr class="break-row" style="background:#fef3c7!important;color:#92400e!important;"><td colspan="${3 + totalCols}">━━━ FRUIT BREAK (${fb.start} – ${fb.end}) [1ST HALF] ━━━</td></tr>`;
+    }
+    if (pIdx === MAJOR_BREAK_AFTER_IDX) {
       tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (${majorBreak.start} – ${majorBreak.end}) ━━━</td></tr>`;
     }
   });
@@ -994,6 +1006,7 @@ export default function App() {
       PERIODS,
       timings.majorBreak,
       teachers,
+      timings.fruitBreak || DEFAULT_TIMINGS.fruitBreak,
     );
   }, [
     columns,
@@ -1003,6 +1016,7 @@ export default function App() {
     schoolInfo,
     PERIODS,
     timings.majorBreak,
+    timings.fruitBreak,
     teachers,
   ]);
 
@@ -1263,7 +1277,7 @@ export default function App() {
     const pages = chunks
       .map(
         (chunk) =>
-          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak, teachers)}</div>`,
+          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak, teachers, timings.fruitBreak || DEFAULT_TIMINGS.fruitBreak)}</div>`,
       )
       .join("\n");
 
@@ -1739,7 +1753,7 @@ export default function App() {
               </p>
 
               <div className="flex flex-col gap-3">
-                {timings.periods.slice(0, BREAK_AFTER_IDX + 1).map((p, idx) => (
+                {timings.periods.slice(0, 4).map((p, idx) => (
                   <div key={idx} className="flex items-center gap-4">
                     <span className="w-24 font-bold text-slate-800">
                       {p.label}
@@ -1768,8 +1782,82 @@ export default function App() {
                   </div>
                 ))}
 
+                <div className="bg-amber-50 border border-amber-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
+                  <span className="w-24 font-bold text-amber-800 text-xs">
+                    Fruit Break (1st Half)
+                  </span>
+                  <input
+                    type="text"
+                    value={
+                      timings.fruitBreak?.start ||
+                      DEFAULT_TIMINGS.fruitBreak.start
+                    }
+                    onChange={(e) =>
+                      setTimings({
+                        ...timings,
+                        fruitBreak: {
+                          ...(timings.fruitBreak ||
+                            DEFAULT_TIMINGS.fruitBreak),
+                          start: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+                  />
+                  <span className="text-slate-400">-</span>
+                  <input
+                    type="text"
+                    value={
+                      timings.fruitBreak?.end || DEFAULT_TIMINGS.fruitBreak.end
+                    }
+                    onChange={(e) =>
+                      setTimings({
+                        ...timings,
+                        fruitBreak: {
+                          ...(timings.fruitBreak ||
+                            DEFAULT_TIMINGS.fruitBreak),
+                          end: e.target.value,
+                        },
+                      })
+                    }
+                    className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-amber-400 bg-white"
+                  />
+                </div>
+
+                {timings.periods.slice(4, 6).map((p, i) => {
+                  const idx = i + 4;
+                  return (
+                    <div key={idx} className="flex items-center gap-4">
+                      <span className="w-24 font-bold text-slate-800">
+                        {p.label}
+                      </span>
+                      <input
+                        type="text"
+                        value={p.start}
+                        onChange={(e) => {
+                          const newPeriods = [...timings.periods];
+                          newPeriods[idx].start = e.target.value;
+                          setTimings({ ...timings, periods: newPeriods });
+                        }}
+                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                      />
+                      <span className="text-slate-400">-</span>
+                      <input
+                        type="text"
+                        value={p.end}
+                        onChange={(e) => {
+                          const newPeriods = [...timings.periods];
+                          newPeriods[idx].end = e.target.value;
+                          setTimings({ ...timings, periods: newPeriods });
+                        }}
+                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                      />
+                    </div>
+                  );
+                })}
+
                 <div className="bg-red-50 border border-red-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
-                  <span className="w-24 font-bold text-red-700">
+                  <span className="w-24 font-bold text-red-700 text-xs">
                     Major Break
                   </span>
                   <input
@@ -1803,8 +1891,8 @@ export default function App() {
                   />
                 </div>
 
-                {timings.periods.slice(BREAK_AFTER_IDX + 1).map((p, i) => {
-                  const idx = i + BREAK_AFTER_IDX + 1;
+                {timings.periods.slice(6).map((p, i) => {
+                  const idx = i + 6;
                   return (
                     <div key={idx} className="flex items-center gap-4">
                       <span className="w-24 font-bold text-slate-800">
@@ -2551,7 +2639,24 @@ export default function App() {
                                 })}
                               </tr>
 
-                              {pIdx === BREAK_AFTER_IDX && (
+                              {pIdx === FRUIT_BREAK_AFTER_IDX && (
+                                <tr>
+                                  <td
+                                    colSpan={3 + visibleColumns.length}
+                                    className="border border-amber-300 text-center font-bold py-1.5"
+                                    style={{
+                                      background: "#fef3c7",
+                                      color: "#92400e",
+                                      fontSize: "12px",
+                                    }}
+                                  >
+                                    ━━━ FRUIT BREAK ({(timings.fruitBreak ?? DEFAULT_TIMINGS.fruitBreak).start}{" "}
+                                    – {(timings.fruitBreak ?? DEFAULT_TIMINGS.fruitBreak).end}) [1ST HALF] ━━━
+                                  </td>
+                                </tr>
+                              )}
+
+                              {pIdx === MAJOR_BREAK_AFTER_IDX && (
                                 <tr>
                                   <td
                                     colSpan={3 + visibleColumns.length}

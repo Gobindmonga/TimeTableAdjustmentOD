@@ -24,7 +24,7 @@ const API_BASE_URL =
 const AUTO_SAVE_DELAY = 2000;
 const FRUIT_BREAK_AFTER_IDX = 3;
 const MAJOR_BREAK_AFTER_IDX = 5;
-const FIRST_HALF_AFTER_IDX = 3; // 1st Half ends at Fruit Break (Period 3), after which 2nd half starts
+const FIRST_HALF_AFTER_IDX = MAJOR_BREAK_AFTER_IDX; // 1st Half ends at Major Break (after Period 5); 2nd Half starts after Major Break (Period 6, 12:30)
 const TOTAL_PERIODS = 10;
 const DAYS = [
   "Monday",
@@ -450,9 +450,10 @@ function getFreePeriodCounts(
 ) {
   let before = 0,
     after = 0;
-  for (let i = 0; i <= FIRST_HALF_AFTER_IDX; i++)
+  const firstHalfEnd = Math.min(FIRST_HALF_AFTER_IDX, periodsLength - 1);
+  for (let i = 0; i <= firstHalfEnd; i++)
     if (isPeriodFree(teacher, day, i)) before++;
-  for (let i = FIRST_HALF_AFTER_IDX + 1; i < periodsLength - 1; i++)
+  for (let i = firstHalfEnd + 1; i < periodsLength - 1; i++)
     if (isPeriodFree(teacher, day, i)) after++;
   return { before, after };
 }
@@ -488,10 +489,11 @@ function getEffectiveFreePeriodCounts(
 ) {
   let before = 0,
     after = 0;
-  for (let i = 0; i <= FIRST_HALF_AFTER_IDX; i++) {
+  const firstHalfEnd = Math.min(FIRST_HALF_AFTER_IDX, periodsLength - 1);
+  for (let i = 0; i <= firstHalfEnd; i++) {
     if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) before++;
   }
-  for (let i = FIRST_HALF_AFTER_IDX + 1; i < periodsLength - 1; i++) {
+  for (let i = firstHalfEnd + 1; i < periodsLength - 1; i++) {
     if (isPeriodFree(teacher, day, i) && !assignedPeriods.has(i)) after++;
   }
   return { before, after };
@@ -563,7 +565,11 @@ function getAvailableSubstitutes(
   );
   const alreadySub = new Set(
     columns
-      .filter((c) => c.id !== currentColId)
+      .filter(
+        (c) =>
+          c.id !== currentColId &&
+          isPeriodInLeaveDuration(c.leaveType, periodIdx),
+      )
       .map((c) => c.substituteTeacher[periodIdx])
       .filter(Boolean),
   );
@@ -616,6 +622,7 @@ function buildPrintHTML(
   majorBreak: { start: string; end: string },
   teachers: Teacher[],
   fruitBreak?: { start: string; end: string },
+  allColumns: Column[] = columns,
 ) {
   const fb = fruitBreak || DEFAULT_TIMINGS.fruitBreak;
   const totalCols = columns.length;
@@ -699,7 +706,7 @@ function buildPrintHTML(
           const teacherObj = teachers.find((t) => t.name === sub);
           const freeText = (() => {
             if (!teacherObj) return "";
-            const assigned = getAssignedSubPeriods(columns, sub, {
+            const assigned = getAssignedSubPeriods(allColumns, sub, {
               colId: col.id,
               periodIdx: pIdx,
             });
@@ -720,10 +727,10 @@ function buildPrintHTML(
       ${columns.map(() => `<td><span class="sign-space"></span></td>`).join("")}
     </tr>`;
     if (pIdx === FRUIT_BREAK_AFTER_IDX) {
-      tbodyHTML += `<tr class="break-row" style="background:#fef3c7!important;color:#92400e!important;"><td colspan="${3 + totalCols}">━━━ FRUIT BREAK (${fb.start} – ${fb.end}) [1ST HALF] ━━━</td></tr>`;
+      tbodyHTML += `<tr class="break-row" style="background:#fef3c7!important;color:#92400e!important;"><td colspan="${3 + totalCols}">━━━ FRUIT BREAK (${fb.start} – ${fb.end}) ━━━</td></tr>`;
     }
     if (pIdx === MAJOR_BREAK_AFTER_IDX) {
-      tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (${majorBreak.start} – ${majorBreak.end}) ━━━</td></tr>`;
+      tbodyHTML += `<tr class="break-row"><td colspan="${3 + totalCols}">━━━ MAJOR BREAK (${majorBreak.start} – ${majorBreak.end}) [1ST HALF / 2ND HALF] ━━━</td></tr>`;
     }
   });
 
@@ -1277,7 +1284,7 @@ export default function App() {
     const pages = chunks
       .map(
         (chunk) =>
-          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak, teachers, timings.fruitBreak || DEFAULT_TIMINGS.fruitBreak)}</div>`,
+          `<div class="print-page">${buildPrintHTML(chunk, printDate, printDay, schoolInfo, PERIODS, timings.majorBreak, teachers, timings.fruitBreak || DEFAULT_TIMINGS.fruitBreak, printCols)}</div>`,
       )
       .join("\n");
 
@@ -1753,7 +1760,7 @@ export default function App() {
               </p>
 
               <div className="flex flex-col gap-3">
-                {timings.periods.slice(0, 4).map((p, idx) => (
+                {timings.periods.slice(0, FRUIT_BREAK_AFTER_IDX + 1).map((p, idx) => (
                   <div key={idx} className="flex items-center gap-4">
                     <span className="w-24 font-bold text-slate-800">
                       {p.label}
@@ -1784,7 +1791,7 @@ export default function App() {
 
                 <div className="bg-amber-50 border border-amber-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
                   <span className="w-24 font-bold text-amber-800 text-xs">
-                    Fruit Break (1st Half)
+                    Fruit Break
                   </span>
                   <input
                     type="text"
@@ -1824,41 +1831,43 @@ export default function App() {
                   />
                 </div>
 
-                {timings.periods.slice(4, 6).map((p, i) => {
-                  const idx = i + 4;
-                  return (
-                    <div key={idx} className="flex items-center gap-4">
-                      <span className="w-24 font-bold text-slate-800">
-                        {p.label}
-                      </span>
-                      <input
-                        type="text"
-                        value={p.start}
-                        onChange={(e) => {
-                          const newPeriods = [...timings.periods];
-                          newPeriods[idx].start = e.target.value;
-                          setTimings({ ...timings, periods: newPeriods });
-                        }}
-                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
-                      />
-                      <span className="text-slate-400">-</span>
-                      <input
-                        type="text"
-                        value={p.end}
-                        onChange={(e) => {
-                          const newPeriods = [...timings.periods];
-                          newPeriods[idx].end = e.target.value;
-                          setTimings({ ...timings, periods: newPeriods });
-                        }}
-                        className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
-                      />
-                    </div>
-                  );
-                })}
+                {timings.periods
+                  .slice(FRUIT_BREAK_AFTER_IDX + 1, MAJOR_BREAK_AFTER_IDX + 1)
+                  .map((p, i) => {
+                    const idx = i + FRUIT_BREAK_AFTER_IDX + 1;
+                    return (
+                      <div key={idx} className="flex items-center gap-4">
+                        <span className="w-24 font-bold text-slate-800">
+                          {p.label}
+                        </span>
+                        <input
+                          type="text"
+                          value={p.start}
+                          onChange={(e) => {
+                            const newPeriods = [...timings.periods];
+                            newPeriods[idx].start = e.target.value;
+                            setTimings({ ...timings, periods: newPeriods });
+                          }}
+                          className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                        />
+                        <span className="text-slate-400">-</span>
+                        <input
+                          type="text"
+                          value={p.end}
+                          onChange={(e) => {
+                            const newPeriods = [...timings.periods];
+                            newPeriods[idx].end = e.target.value;
+                            setTimings({ ...timings, periods: newPeriods });
+                          }}
+                          className="w-24 border border-slate-300 rounded px-2 py-1.5 text-center focus:outline-none focus:ring-1 focus:ring-red-400"
+                        />
+                      </div>
+                    );
+                  })}
 
                 <div className="bg-red-50 border border-red-200 border-dashed rounded flex items-center gap-4 p-3 my-1">
                   <span className="w-24 font-bold text-red-700 text-xs">
-                    Major Break
+                    Major Break (1st/2nd Half)
                   </span>
                   <input
                     type="text"
@@ -1891,8 +1900,8 @@ export default function App() {
                   />
                 </div>
 
-                {timings.periods.slice(6).map((p, i) => {
-                  const idx = i + 6;
+                {timings.periods.slice(MAJOR_BREAK_AFTER_IDX + 1).map((p, i) => {
+                  const idx = i + MAJOR_BREAK_AFTER_IDX + 1;
                   return (
                     <div key={idx} className="flex items-center gap-4">
                       <span className="w-24 font-bold text-slate-800">
@@ -2651,7 +2660,7 @@ export default function App() {
                                     }}
                                   >
                                     ━━━ FRUIT BREAK ({(timings.fruitBreak ?? DEFAULT_TIMINGS.fruitBreak).start}{" "}
-                                    – {(timings.fruitBreak ?? DEFAULT_TIMINGS.fruitBreak).end}) [1ST HALF] ━━━
+                                    – {(timings.fruitBreak ?? DEFAULT_TIMINGS.fruitBreak).end}) ━━━
                                   </td>
                                 </tr>
                               )}
@@ -2668,7 +2677,7 @@ export default function App() {
                                     }}
                                   >
                                     ━━━ MAJOR BREAK ({timings.majorBreak.start}{" "}
-                                    – {timings.majorBreak.end}) ━━━
+                                    – {timings.majorBreak.end}) [1ST HALF / 2ND HALF] ━━━
                                   </td>
                                 </tr>
                               )}
@@ -3395,10 +3404,16 @@ function RecordsPage({
                                               const teacherObj = teachers.find((t) => t.name === sub);
                                               const freeText = (() => {
                                                 if (!teacherObj) return "";
-                                                const { before, after } = getFreePeriodCounts(
+                                                const assigned = getAssignedSubPeriods(
+                                                  record.columns,
+                                                  sub,
+                                                  { colId: col.id, periodIdx: pIdx },
+                                                );
+                                                const { before, after } = getEffectiveFreePeriodCounts(
                                                   teacherObj,
                                                   record.day,
                                                   periods.length,
+                                                  assigned,
                                                 );
                                                 return ` (${before},${after})`;
                                               })();
